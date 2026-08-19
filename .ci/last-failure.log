@@ -1,0 +1,125 @@
+GitHub Actions - último diagnóstico de falha
+===========================================
+run_id=32305671965
+run_attempt=1
+commit=4b67f52c2edeb0292a33a54e4c119c118d835ede
+image=aclemons/slackware:15.0
+jobs=2
+
+Espaço em disco:
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root       145G   39G  106G  27% /
+
+Uso da árvore de build:
+4.0K	.kernel-build
+
+Últimas 2500 linhas de output/build.log:
+-----------------------------------------
+
+==== Ambiente Slackware 15.0 ====
+Slackware 15.0
+Arquitetura: x86_64
+Jobs: 2
+Filesystem      Size  Used Avail Use% Mounted on
+overlay         145G   39G  106G  27% /
+/dev/root       145G   39G  106G  27% /work
+
+==== Preparando slackpkg para ambiente não interativo ====
+
+Updating the package lists...
+	Downloading...
+			Downloading https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc...
+--2026-08-19 21:49:48--  https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+Resolving mirrors.kernel.org (mirrors.kernel.org)... 142.0.200.124, 2605:f480:58:1:0:1994:3:14
+Connecting to mirrors.kernel.org (mirrors.kernel.org)|142.0.200.124|:443... connected.
+ERROR: cannot verify mirrors.kernel.org's certificate, issued by 'CN=YE2,O=Let\'s Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+To connect to mirrors.kernel.org insecurely, use `--no-check-certificate'.
+
+Error downloading from https://mirrors.kernel.org/slackware/slackware64-15.0/.
+Please check your mirror and try again.
+
+
+==== Instalando série Slackware: a ====
+Updating the package lists...
+	Downloading...
+			Downloading https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc...
+--2026-08-19 21:49:50--  https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+Resolving mirrors.kernel.org (mirrors.kernel.org)... 142.0.200.124, 2605:f480:58:1:0:1994:3:14
+Connecting to mirrors.kernel.org (mirrors.kernel.org)|142.0.200.124|:443... connected.
+ERROR: cannot verify mirrors.kernel.org's certificate, issued by 'CN=YE2,O=Let\'s Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+To connect to mirrors.kernel.org insecurely, use `--no-check-certificate'.
+
+Error downloading from https://mirrors.kernel.org/slackware/slackware64-15.0/.
+Please check your mirror and try again.
+
+
+==== Instalando série Slackware: ap ====
+Updating the package lists...
+	Downloading...
+			Downloading https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc...
+--2026-08-19 21:49:50--  https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+Resolving mirrors.kernel.org (mirrors.kernel.org)... 142.0.200.124, 2605:f480:58:1:0:1994:3:14
+Connecting to mirrors.kernel.org (mirrors.kernel.org)|142.0.200.124|:443... connected.
+ERROR: cannot verify mirrors.kernel.org's certificate, issued by 'CN=YE2,O=Let\'s Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+To connect to mirrors.kernel.org insecurely, use `--no-check-certificate'.
+
+Error downloading from https://mirrors.kernel.org/slackware/slackware64-15.0/.
+Please check your mirror and try again.
+
+
+==== Instalando série Slackware: d ====
+Updating the package lists...
+	Downloading...
+			Downloading https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc...
+--2026-08-19 21:49:51--  https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+Resolving mirrors.kernel.org (mirrors.kernel.org)... 142.0.200.124, 2605:f480:58:1:0:1994:3:14
+Connecting to mirrors.kernel.org (mirrors.kernel.org)|142.0.200.124|:443... connected.
+ERROR: cannot verify mirrors.kernel.org's certificate, issued by 'CN=YE2,O=Let\'s Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+To connect to mirrors.kernel.org insecurely, use `--no-check-certificate'.
+
+Error downloading from https://mirrors.kernel.org/slackware/slackware64-15.0/.
+Please check your mirror and try again.
+
+
+==== Instalando série Slackware: l ====
+Updating the package lists...
+	Downloading...
+			Downloading https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc...
+--2026-08-19 21:49:52--  https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+Resolving mirrors.kernel.org (mirrors.kernel.org)... 142.0.200.124, 2605:f480:58:1:0:1994:3:14
+Connecting to mirrors.kernel.org (mirrors.kernel.org)|142.0.200.124|:443... connected.
+ERROR: cannot verify mirrors.kernel.org's certificate, issued by 'CN=YE2,O=Let\'s Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+To connect to mirrors.kernel.org insecurely, use `--no-check-certificate'.
+
+Error downloading from https://mirrors.kernel.org/slackware/slackware64-15.0/.
+Please check your mirror and try again.
+
+
+==== Instalando série Slackware: n ====
+Updating the package lists...
+	Downloading...
+			Downloading https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc...
+--2026-08-19 21:49:52--  https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+Resolving mirrors.kernel.org (mirrors.kernel.org)... 142.0.200.124, 2605:f480:58:1:0:1994:3:14
+Connecting to mirrors.kernel.org (mirrors.kernel.org)|142.0.200.124|:443... connected.
+ERROR: cannot verify mirrors.kernel.org's certificate, issued by 'CN=YE2,O=Let\'s Encrypt,C=US':
+  Unable to locally verify the issuer's authority.
+To connect to mirrors.kernel.org insecurely, use `--no-check-certificate'.
+
+Error downloading from https://mirrors.kernel.org/slackware/slackware64-15.0/.
+Please check your mirror and try again.
+
+/work/.github/scripts/build-kernel-slackware.sh: line 78: update-ca-certificates: command not found
+
+==== Validando toolchain Slackware 15.0 ====
+
+ERRO na linha 87 (status 1)
+
+Filesystem      Size  Used Avail Use% Mounted on
+overlay         145G   39G  106G  27% /
+/dev/root       145G   39G  106G  27% /work
