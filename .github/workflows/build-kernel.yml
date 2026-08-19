@@ -15,7 +15,7 @@ env:
 
 jobs:
   build:
-    name: Build kernel 6.18 LTS and TXZ
+    name: Build kernel 6.18 LTS and Slackware TXZ
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -57,7 +57,7 @@ jobs:
           test -n "$VERSION"
           echo "KERNEL_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "KERNEL_TARBALL=linux-$VERSION.tar.xz" >> "$GITHUB_ENV"
-          echo "PACKAGE_NAME=kernel-generic-$VERSION-x86_64-1_custom.txz" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=kernel-generic-lts618-$VERSION-x86_64-1_custom.txz" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=kernel-$VERSION" >> "$GITHUB_ENV"
           echo "Versão detectada: $VERSION"
 
@@ -85,7 +85,7 @@ jobs:
 
           BASE_CONFIG="$(find /boot -maxdepth 1 -type f -name 'config-*' 2>/dev/null | sort -V | tail -n 1 || true)"
           if [ -n "$BASE_CONFIG" ] && [ -r "$BASE_CONFIG" ]; then
-            echo "Using generic runner config as broad hardware baseline: $BASE_CONFIG"
+            echo "Using runner config as broad x86_64 hardware baseline: $BASE_CONFIG"
             cp "$BASE_CONFIG" .config
             make olddefconfig
           else
@@ -160,7 +160,9 @@ jobs:
             }
           done
 
-          make -s kernelrelease | tee ../kernelrelease.txt
+          RELEASE="$(make -s kernelrelease)"
+          test "$RELEASE" = "$KERNEL_VERSION"
+          printf '%s\n' "$RELEASE" | tee ../kernelrelease.txt
           cp .config "../config-$KERNEL_VERSION.final"
 
           echo "Critical configuration:"
@@ -188,7 +190,7 @@ jobs:
             "$PKGROOT/boot" \
             "$PKGROOT/lib/modules" \
             "$PKGROOT/usr/src" \
-            "$PKGROOT/usr/doc/kernel-generic-$RELEASE" \
+            "$PKGROOT/usr/doc/kernel-generic-lts618-$RELEASE" \
             "$PKGROOT/install"
 
           cp arch/x86/boot/bzImage "$PKGROOT/boot/vmlinuz-$RELEASE"
@@ -216,11 +218,18 @@ jobs:
           ln -s "/usr/src/linux-$RELEASE" "$PKGROOT/lib/modules/$RELEASE/build"
           ln -s "/usr/src/linux-$RELEASE" "$PKGROOT/lib/modules/$RELEASE/source"
 
-          cat > "$PKGROOT/usr/doc/kernel-generic-$RELEASE/README" <<EOF
-          Linux $RELEASE - pacote genérico para Slackware/Salix x86_64.
+          cat > "$PKGROOT/usr/doc/kernel-generic-lts618-$RELEASE/README" <<EOF
+          Linux $RELEASE - pacote binário para Slackware/Salix x86_64.
 
-          Inclui kernel, System.map, configuração, módulos e árvore preparada
-          para compilação de módulos externos em /usr/src/linux-$RELEASE.
+          Instala com:
+            sudo installpkg $PACKAGE_NAME
+
+          Conteúdo principal:
+            /boot/vmlinuz-$RELEASE
+            /boot/System.map-$RELEASE
+            /boot/config-$RELEASE
+            /lib/modules/$RELEASE/
+            /usr/src/linux-$RELEASE/
 
           XFS e Btrfs são compilados diretamente no kernel. O pacote não remove
           o kernel anterior e não altera automaticamente systemd-boot, GRUB,
@@ -228,17 +237,17 @@ jobs:
           EOF
 
           cat > "$PKGROOT/install/slack-desc" <<EOF
-          kernel-generic: kernel-generic (Linux $RELEASE LTS generic)
-          kernel-generic:
-          kernel-generic: Linux $RELEASE da série 6.18 LTS para Slackware/Salix x86_64.
-          kernel-generic: Inclui kernel, módulos e fonte preparada para módulos externos.
-          kernel-generic: XFS e Btrfs são incorporados ao kernel para montagem confiável.
-          kernel-generic: Mantém nomes versionados e preserva kernels anteriores.
-          kernel-generic:
-          kernel-generic: Projeto: kernel-generic-6.18-lts-slackware-salix
-          kernel-generic: Fonte do kernel: kernel.org
-          kernel-generic:
-          kernel-generic:
+          kernel-generic-lts618: kernel-generic-lts618 (Linux $RELEASE LTS generic)
+          kernel-generic-lts618:
+          kernel-generic-lts618: Linux $RELEASE da série 6.18 LTS para Slackware/Salix x86_64.
+          kernel-generic-lts618: Inclui kernel, módulos e fonte preparada para módulos externos.
+          kernel-generic-lts618: XFS e Btrfs são incorporados ao kernel para montagem confiável.
+          kernel-generic-lts618: Usa nome próprio para não substituir o kernel-generic da distribuição.
+          kernel-generic-lts618: Mantém nomes versionados e preserva kernels anteriores.
+          kernel-generic-lts618:
+          kernel-generic-lts618: Projeto: kernel-generic-6.18-lts-slackware-salix
+          kernel-generic-lts618: Fonte: kernel.org
+          kernel-generic-lts618:
           EOF
 
           cat > "$PKGROOT/install/doinst.sh" <<EOF
@@ -255,7 +264,7 @@ jobs:
             "$PKGROOT/boot/System.map-$RELEASE" \
             "$PKGROOT/boot/config-$RELEASE"
 
-      - name: Create and validate TXZ
+      - name: Create native Slackware TXZ and validate layout
         shell: bash
         run: |
           set -euxo pipefail
@@ -263,13 +272,43 @@ jobs:
           PKGROOT="$GITHUB_WORKSPACE/build/pkgroot"
           PACKAGE="$GITHUB_WORKSPACE/output/$PACKAGE_NAME"
 
-          tar --format=gnu --owner=0 --group=0 --numeric-owner \
-            -C "$PKGROOT" -cJf "$PACKAGE" .
+          case "$PACKAGE_NAME" in
+            kernel-generic-lts618-*-x86_64-*_custom.txz) ;;
+            *) echo "Invalid Slackware package name: $PACKAGE_NAME"; exit 1 ;;
+          esac
+
+          sudo chown -R 0:0 "$PKGROOT"
+
+          tar \
+            --format=gnu \
+            --owner=0 --group=0 --numeric-owner \
+            -C "$PKGROOT" \
+            -cJf "$PACKAGE" \
+            boot lib usr install
 
           test -s "$PACKAGE"
-          tar -tf "$PACKAGE" | grep -q "boot/vmlinuz-$KERNEL_VERSION"
-          tar -tf "$PACKAGE" | grep -q "lib/modules/$KERNEL_VERSION/"
-          tar -tf "$PACKAGE" | grep -q "usr/src/linux-$KERNEL_VERSION/"
+
+          tar -tJf "$PACKAGE" > output/package-contents.txt
+          grep -qx "install/slack-desc" output/package-contents.txt
+          grep -qx "install/doinst.sh" output/package-contents.txt
+          grep -qx "boot/vmlinuz-$KERNEL_VERSION" output/package-contents.txt
+          grep -qx "boot/System.map-$KERNEL_VERSION" output/package-contents.txt
+          grep -qx "boot/config-$KERNEL_VERSION" output/package-contents.txt
+          grep -q "^lib/modules/$KERNEL_VERSION/" output/package-contents.txt
+          grep -q "^usr/src/linux-$KERNEL_VERSION/" output/package-contents.txt
+
+          TESTROOT="$GITHUB_WORKSPACE/build/install-test-root"
+          rm -rf "$TESTROOT"
+          mkdir -p "$TESTROOT"
+          tar -xJf "$PACKAGE" -C "$TESTROOT"
+
+          test -s "$TESTROOT/boot/vmlinuz-$KERNEL_VERSION"
+          test -s "$TESTROOT/boot/System.map-$KERNEL_VERSION"
+          test -s "$TESTROOT/boot/config-$KERNEL_VERSION"
+          test -d "$TESTROOT/lib/modules/$KERNEL_VERSION"
+          test -d "$TESTROOT/usr/src/linux-$KERNEL_VERSION"
+          test -f "$TESTROOT/install/slack-desc"
+          test -x "$TESTROOT/install/doinst.sh"
 
           sha256sum "$PACKAGE" > "$PACKAGE.sha256"
           ls -lh "$PACKAGE" "$PACKAGE.sha256"
@@ -278,10 +317,11 @@ jobs:
       - name: Upload Actions artifact
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-generic-${{ env.KERNEL_VERSION }}-txz
+          name: kernel-generic-lts618-${{ env.KERNEL_VERSION }}-txz
           path: |
             output/${{ env.PACKAGE_NAME }}
             output/${{ env.PACKAGE_NAME }}.sha256
+            output/package-contents.txt
           if-no-files-found: error
           compression-level: 0
 
@@ -299,5 +339,5 @@ jobs:
           else
             gh release create "$RELEASE_TAG" "$PACKAGE" "$CHECKSUM" \
               --title "Linux $KERNEL_VERSION LTS para Slackware/Salix" \
-              --notes "Pacote TXZ genérico x86_64 do Linux $KERNEL_VERSION, série 6.18 LTS. Inclui kernel, módulos e fonte preparada para módulos externos. XFS e Btrfs são compilados diretamente no kernel. O pacote não altera automaticamente o gerenciador de boot e preserva o kernel anterior."
+              --notes "Pacote TXZ x86_64 instalável nativamente em Slackware/Salix com: sudo installpkg $PACKAGE_NAME. Inclui kernel, módulos e fonte preparada para módulos externos. XFS e Btrfs são compilados diretamente no kernel. O nome kernel-generic-lts618 evita substituir o kernel-generic da distribuição. O pacote não altera automaticamente o gerenciador de boot e preserva o kernel anterior."
           fi
