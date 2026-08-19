@@ -18,11 +18,11 @@ concurrency:
 
 env:
   JOBS: "2"
-  SLACKWARE_IMAGE: "aclemons/slackware:current"
+  SLACKWARE_IMAGE: "aclemons/slackware:15.0-full"
 
 jobs:
   build:
-    name: Compilar e empacotar no Slackware-current
+    name: Compilar e empacotar no Slackware 15.0 full
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -52,9 +52,9 @@ jobs:
         run: |
           set -euxo pipefail
           bash -n .github/scripts/build-kernel-slackware.sh
-          test -x .github/scripts/build-kernel-slackware.sh || chmod +x .github/scripts/build-kernel-slackware.sh
+          chmod +x .github/scripts/build-kernel-slackware.sh
 
-      - name: Baixar container Slackware-current
+      - name: Baixar Slackware 15.0 completo
         shell: bash
         run: |
           set -euxo pipefail
@@ -67,16 +67,68 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          mkdir -p input build output tmp
+          rm -rf output
+          mkdir -p output
+
           docker run --rm \
             --platform linux/amd64 \
             --user 0:0 \
             -e JOBS="$JOBS" \
             -e WORKROOT=/work \
+            -e BUILDROOT=/kernel-build \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$SLACKWARE_IMAGE" \
             /bin/bash /work/.github/scripts/build-kernel-slackware.sh
+
+      - name: Registrar diagnóstico da falha
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .ci
+
+          {
+            echo "GitHub Actions - último diagnóstico de falha"
+            echo "==========================================="
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "run_attempt=$GITHUB_RUN_ATTEMPT"
+            echo "commit=$GITHUB_SHA"
+            echo "image=$SLACKWARE_IMAGE"
+            echo "jobs=$JOBS"
+            echo
+
+            if [ -s output/build.log ]; then
+              echo "Últimas 2000 linhas de output/build.log:"
+              echo "-----------------------------------------"
+              tail -n 2000 output/build.log
+            else
+              echo "output/build.log não foi criado; a falha ocorreu antes ou durante a inicialização do container."
+            fi
+          } > .ci/last-failure.log
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci/last-failure.log
+
+          if ! git diff --cached --quiet; then
+            git commit -m "CI: registra última falha do build do kernel"
+            git push origin HEAD:main || true
+          fi
+
+          cat .ci/last-failure.log | tail -n 200
+
+      - name: Upload do log em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-build-failure-log
+          path: |
+            output/build.log
+            output/meta.env
+            .ci/last-failure.log
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Ler metadados do pacote
         id: meta
@@ -119,17 +171,6 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-      - name: Upload do log em caso de falha
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kernel-build-failure-log
-          path: |
-            output/build.log
-            output/meta.env
-          if-no-files-found: ignore
-          retention-days: 7
-
   publish:
     name: Publicar TXZ
     needs: build
@@ -152,6 +193,7 @@ jobs:
         run: |
           set -euxo pipefail
           ls -lh release/
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload \
               "$TAG" \
@@ -164,5 +206,5 @@ jobs:
               "release/$PACKAGE" \
               "release/$PACKAGE.sha256" \
               --title "Linux $VERSION para Slackware/Salix" \
-              --notes "Pacote TXZ x86_64 compilado dentro do Slackware-current e criado com o makepkg nativo do Slackware. Inclui kernel e módulos correspondentes. XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in. Instalação: sudo installpkg $PACKAGE"
+              --notes "Pacote TXZ x86_64 compilado e empacotado dentro de Slackware 15.0 completo, usando o makepkg nativo do Slackware. Inclui kernel e módulos correspondentes. XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in. Instalação: sudo installpkg $PACKAGE"
           fi
