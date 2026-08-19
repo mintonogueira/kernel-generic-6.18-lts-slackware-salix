@@ -1,132 +1,174 @@
-name: Build Kernel 6.18 TXZ
+name: Build Slackware Kernel 6.18 TXZ
 
 on:
   workflow_dispatch:
   push:
     branches:
       - main
+    paths:
+      - ".github/workflows/build-kernel.yml"
 
 permissions:
   contents: write
 
 env:
-  SERIES: "6.18"
   JOBS: "2"
 
 jobs:
   build:
-    name: Build kernel 6.18 LTS and Slackware TXZ
+    name: Build no Slackware 15.0
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
+    container:
+      image: aclemons/slackware:15.0
+
+    defaults:
+      run:
+        shell: bash
+
+    outputs:
+      kernel_version: ${{ steps.version.outputs.kernel_version }}
+      package_name: ${{ steps.version.outputs.package_name }}
+      release_tag: ${{ steps.version.outputs.release_tag }}
+
     steps:
+      - name: Confirmar ambiente Slackware
+        run: |
+          set -euo pipefail
+          echo "=== /etc/slackware-version ==="
+          cat /etc/slackware-version
+          echo
+          echo "=== uname ==="
+          uname -a
+          echo
+          echo "=== pkgtools ==="
+          command -v installpkg
+          command -v upgradepkg
+          command -v makepkg
+
+      - name: Instalar toolchain do Slackware
+        run: |
+          set -euo pipefail
+          SLACKPKG="slackpkg -batch=on -default_answer=y -orig_backups=off"
+          $SLACKPKG update
+          $SLACKPKG install \
+            ca-certificates \
+            wget \
+            git \
+            gcc \
+            binutils \
+            make \
+            bc \
+            bison \
+            flex \
+            perl \
+            openssl \
+            openssl-solibs \
+            elfutils \
+            gmp \
+            mpfr \
+            libmpc \
+            guile \
+            gc \
+            libunistring \
+            zlib \
+            bzip2 \
+            xz \
+            zstd \
+            kmod \
+            cpio \
+            rsync \
+            patch \
+            diffutils \
+            file \
+            which \
+            pkgtools
+          update-ca-certificates || true
+          echo
+          echo "=== Toolchain ==="
+          gcc --version | head -1
+          ld --version | head -1
+          make --version | head -1
+          command -v makepkg
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Free disk space
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo rm -rf /usr/local/lib/android || true
-          sudo rm -rf /usr/share/dotnet || true
-          sudo rm -rf /opt/ghc || true
-          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
-          sudo apt-get clean
-          df -h /
-
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential bc bison flex libssl-dev libelf-dev \
-            dwarves curl xz-utils zstd kmod cpio rsync perl python3 \
-            pkg-config file ca-certificates git gh
-
-      - name: Detect latest Linux 6.18.x
-        shell: bash
+      - name: Detectar Linux 6.18.x mais recente
+        id: version
         run: |
           set -euo pipefail
-          INDEX="$(curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/)"
+          INDEX="$(wget -qO- https://cdn.kernel.org/pub/linux/kernel/v6.x/)"
           VERSION="$(printf '%s\n' "$INDEX" \
             | grep -oE 'linux-6\.18\.[0-9]+\.tar\.xz' \
             | sed -e 's/^linux-//' -e 's/\.tar\.xz$//' \
             | sort -Vu \
-            | tail -n 1)"
+            | tail -1)"
           test -n "$VERSION"
+          PACKAGE_NAME="kernel-generic-lts618-${VERSION}-x86_64-1_custom.txz"
+          RELEASE_TAG="kernel-${VERSION}"
+          echo "kernel_version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           echo "KERNEL_VERSION=$VERSION" >> "$GITHUB_ENV"
-          echo "KERNEL_TARBALL=linux-$VERSION.tar.xz" >> "$GITHUB_ENV"
-          echo "PACKAGE_NAME=kernel-generic-lts618-$VERSION-x86_64-1_custom.txz" >> "$GITHUB_ENV"
-          echo "RELEASE_TAG=kernel-$VERSION" >> "$GITHUB_ENV"
-          echo "Versão detectada: $VERSION"
+          echo "PACKAGE_NAME=$PACKAGE_NAME" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
+          echo "Kernel selecionado: $VERSION"
+          echo "Pacote: $PACKAGE_NAME"
 
-      - name: Download and verify kernel source
-        shell: bash
+      - name: Baixar e verificar kernel
         run: |
-          set -euxo pipefail
-          mkdir -p build/downloads
-          cd build/downloads
-          curl -fL --retry 3 -o "$KERNEL_TARBALL" \
-            "https://cdn.kernel.org/pub/linux/kernel/v6.x/$KERNEL_TARBALL"
-          curl -fL --retry 3 -o sha256sums.asc \
-            "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
-          EXPECTED="$(awk -v f="$KERNEL_TARBALL" '$2 == f {print $1; exit}' sha256sums.asc)"
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/build/download"
+          cd "$GITHUB_WORKSPACE/build/download"
+          TARBALL="linux-${KERNEL_VERSION}.tar.xz"
+          wget "https://cdn.kernel.org/pub/linux/kernel/v6.x/${TARBALL}"
+          wget "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+          EXPECTED="$(awk -v file="$TARBALL" '$2 == file { print $1; exit }' sha256sums.asc)"
           test -n "$EXPECTED"
-          printf '%s  %s\n' "$EXPECTED" "$KERNEL_TARBALL" | sha256sum -c -
-          cd ..
-          tar -xJf "downloads/$KERNEL_TARBALL"
+          printf '%s  %s\n' "$EXPECTED" "$TARBALL" | sha256sum -c -
+          cd "$GITHUB_WORKSPACE/build"
+          tar -xJf "download/${TARBALL}"
 
-      - name: Configure generic Slackware/Salix kernel
-        shell: bash
+      - name: Obter configuração Slackware x86_64
         run: |
-          set -euxo pipefail
-          cd "build/linux-$KERNEL_VERSION"
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/build/linux-${KERNEL_VERSION}"
+          wget -O .config \
+            "https://mirrors.slackware.com/slackware/slackware64-current/source/k612/kernel-configs/config-6.12.103.x64"
+          test -s .config
+          echo "Configuração Slackware obtida:"
+          wc -l .config
 
-          BASE_CONFIG="$(find /boot -maxdepth 1 -type f -name 'config-*' 2>/dev/null | sort -V | tail -n 1 || true)"
-          if [ -n "$BASE_CONFIG" ] && [ -r "$BASE_CONFIG" ]; then
-            echo "Using runner config as broad x86_64 hardware baseline: $BASE_CONFIG"
-            cp "$BASE_CONFIG" .config
-            make olddefconfig
-          else
-            echo "No /boot config found; using x86_64_defconfig"
-            make x86_64_defconfig
-          fi
-
-          CFG=./scripts/config
-
+      - name: Adaptar configuração para Linux 6.18
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/build/linux-${KERNEL_VERSION}"
+          make olddefconfig
+          CFG="./scripts/config"
           "$CFG" --set-str LOCALVERSION ""
           "$CFG" --disable LOCALVERSION_AUTO
-
           "$CFG" --enable MODULES
           "$CFG" --enable MODULE_UNLOAD
           "$CFG" --disable MODVERSIONS
           "$CFG" --disable MODULE_SIG
           "$CFG" --disable MODULE_SIG_ALL
-          "$CFG" --enable MODULE_COMPRESS_NONE || true
-          "$CFG" --disable MODULE_COMPRESS_GZIP || true
-          "$CFG" --disable MODULE_COMPRESS_XZ || true
-          "$CFG" --disable MODULE_COMPRESS_ZSTD || true
-
           "$CFG" --set-str SYSTEM_TRUSTED_KEYS ""
           "$CFG" --set-str SYSTEM_REVOCATION_KEYS ""
           "$CFG" --disable DEBUG_INFO
-          "$CFG" --disable DEBUG_INFO_BTF
-          "$CFG" --disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT || true
+          "$CFG" --disable DEBUG_INFO_BTF || true
           "$CFG" --disable RUST || true
           "$CFG" --disable LTO || true
           "$CFG" --enable LTO_NONE || true
-
           "$CFG" --enable BLK_DEV_INITRD
           "$CFG" --enable DEVTMPFS
           "$CFG" --enable DEVTMPFS_MOUNT
           "$CFG" --enable TMPFS
-
           "$CFG" --enable EFI
           "$CFG" --enable EFI_STUB
           "$CFG" --enable EFIVAR_FS
           "$CFG" --enable EFI_PARTITION
-
           "$CFG" --enable SCSI
           "$CFG" --enable BLK_DEV_SD
           "$CFG" --enable ATA
@@ -135,209 +177,209 @@ jobs:
           "$CFG" --enable BLK_DEV_NVME
           "$CFG" --enable BLK_DEV_DM
           "$CFG" --enable DM_CRYPT
-
           "$CFG" --enable XFS_FS
           "$CFG" --enable BTRFS_FS
           "$CFG" --enable EXT4_FS
           "$CFG" --enable FAT_FS
           "$CFG" --enable VFAT_FS
-
-          for OPT in \
-            USB_SUPPORT USB USB_XHCI_HCD USB_XHCI_PCI \
-            USB_EHCI_HCD USB_EHCI_PCI USB_OHCI_HCD USB_OHCI_HCD_PCI \
-            USB_UHCI_HCD USB_STORAGE HID HID_GENERIC USB_HID \
-            CRYPTO CRYPTO_AES CRYPTO_XTS CRYPTO_SHA256 CRYPTO_SHA512
-          do
-            "$CFG" --enable "$OPT" || true
-          done
-
+          "$CFG" --enable ZSTD_COMPRESS
+          "$CFG" --enable ZSTD_DECOMPRESS
+          "$CFG" --enable CRYPTO
+          "$CFG" --enable CRYPTO_AES
+          "$CFG" --enable CRYPTO_XTS
+          "$CFG" --enable CRYPTO_SHA256
+          "$CFG" --enable CRYPTO_SHA512
           make olddefconfig
+          cp .config "$GITHUB_WORKSPACE/build/config-${KERNEL_VERSION}.final"
 
-          for SYMBOL in MODULES DEVTMPFS SCSI BLK_DEV_SD ATA SATA_AHCI XFS_FS BTRFS_FS EFI EFI_STUB; do
-            grep -q "^CONFIG_${SYMBOL}=y$" .config || {
-              echo "Required CONFIG_${SYMBOL}=y not satisfied"
+      - name: Validar configuração crítica
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/build/linux-${KERNEL_VERSION}"
+          REQUIRE_Y=(
+            MODULES
+            DEVTMPFS
+            SCSI
+            BLK_DEV_SD
+            ATA
+            SATA_AHCI
+            BLK_DEV_DM
+            DM_CRYPT
+            XFS_FS
+            BTRFS_FS
+            EXT4_FS
+            EFI
+            EFI_STUB
+            ZSTD_COMPRESS
+            ZSTD_DECOMPRESS
+          )
+          for SYMBOL in "${REQUIRE_Y[@]}"; do
+            if ! grep -q "^CONFIG_${SYMBOL}=y$" .config; then
+              echo "CONFIG_${SYMBOL} não ficou =y"
               exit 1
-            }
+            fi
           done
-
+          grep -E '^CONFIG_(MODULES|MODVERSIONS|SCSI|BLK_DEV_SD|ATA|SATA_AHCI|BLK_DEV_DM|DM_CRYPT|XFS_FS|BTRFS_FS|EXT4_FS|EFI|EFI_STUB|ZSTD_COMPRESS|ZSTD_DECOMPRESS)=' .config
           RELEASE="$(make -s kernelrelease)"
           test "$RELEASE" = "$KERNEL_VERSION"
-          printf '%s\n' "$RELEASE" | tee ../kernelrelease.txt
-          cp .config "../config-$KERNEL_VERSION.final"
+          echo "Kernel release: $RELEASE"
 
-          echo "Critical configuration:"
-          grep -E '^CONFIG_(MODULES|MODVERSIONS|SCSI|BLK_DEV_SD|ATA|SATA_AHCI|NVME_CORE|BLK_DEV_NVME|BLK_DEV_DM|DM_CRYPT|XFS_FS|BTRFS_FS|EFI|EFI_STUB|ZSTD_COMPRESS)=' .config || true
-
-      - name: Build kernel and modules with 2 jobs
-        shell: bash
+      - name: Compilar kernel e módulos no Slackware
         run: |
-          set -euxo pipefail
-          cd "build/linux-$KERNEL_VERSION"
-          make -j"$JOBS" bzImage modules
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/build/linux-${KERNEL_VERSION}"
+          echo "Compilando com ${JOBS} jobs"
+          make -j"${JOBS}" bzImage modules
           test -s arch/x86/boot/bzImage
           test -s System.map
+          ls -lh arch/x86/boot/bzImage System.map
 
-      - name: Assemble Slackware/Salix package tree
-        shell: bash
+      - name: Montar árvore do pacote Slackware
         run: |
-          set -euxo pipefail
-          cd "build/linux-$KERNEL_VERSION"
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/build/linux-${KERNEL_VERSION}"
           RELEASE="$(make -s kernelrelease)"
-          PKGROOT="$GITHUB_WORKSPACE/build/pkgroot"
-
+          PKGROOT="$GITHUB_WORKSPACE/build/package-root"
           rm -rf "$PKGROOT"
           mkdir -p \
             "$PKGROOT/boot" \
             "$PKGROOT/lib/modules" \
-            "$PKGROOT/usr/src" \
-            "$PKGROOT/usr/doc/kernel-generic-lts618-$RELEASE" \
+            "$PKGROOT/usr/doc/kernel-generic-lts618-${RELEASE}" \
             "$PKGROOT/install"
-
-          cp arch/x86/boot/bzImage "$PKGROOT/boot/vmlinuz-$RELEASE"
-          cp System.map "$PKGROOT/boot/System.map-$RELEASE"
-          cp .config "$PKGROOT/boot/config-$RELEASE"
-
+          cp arch/x86/boot/bzImage "$PKGROOT/boot/vmlinuz-${RELEASE}"
+          cp System.map "$PKGROOT/boot/System.map-${RELEASE}"
+          cp .config "$PKGROOT/boot/config-${RELEASE}"
           make modules_install INSTALL_MOD_PATH="$PKGROOT" INSTALL_MOD_STRIP=1
+          rm -f \
+            "$PKGROOT/lib/modules/${RELEASE}/build" \
+            "$PKGROOT/lib/modules/${RELEASE}/source"
+          cat > "$PKGROOT/usr/doc/kernel-generic-lts618-${RELEASE}/README" <<EOF
+Linux ${RELEASE}
 
-          rm -f "$PKGROOT/lib/modules/$RELEASE/build" "$PKGROOT/lib/modules/$RELEASE/source"
+Pacote customizado para Slackware/Salix x86_64.
+Compilado dentro de Slackware 15.0.
 
-          make clean
-          cp "$GITHUB_WORKSPACE/build/config-$KERNEL_VERSION.final" .config
-          make olddefconfig
-          make modules_prepare
+Inclui:
+  /boot/vmlinuz-${RELEASE}
+  /boot/System.map-${RELEASE}
+  /boot/config-${RELEASE}
+  /lib/modules/${RELEASE}/
 
-          SRCROOT="$PKGROOT/usr/src/linux-$RELEASE"
-          mkdir -p "$SRCROOT"
-          rsync -a \
-            --exclude='.git' \
-            --exclude='Documentation' \
-            --exclude='tools' \
-            --exclude='samples' \
-            ./ "$SRCROOT/"
+XFS, Btrfs, Zstd, SATA/AHCI e suporte essencial de armazenamento foram
+compilados diretamente no kernel.
 
-          ln -s "/usr/src/linux-$RELEASE" "$PKGROOT/lib/modules/$RELEASE/build"
-          ln -s "/usr/src/linux-$RELEASE" "$PKGROOT/lib/modules/$RELEASE/source"
-
-          cat > "$PKGROOT/usr/doc/kernel-generic-lts618-$RELEASE/README" <<EOF
-          Linux $RELEASE - pacote binário para Slackware/Salix x86_64.
-
-          Instala com:
-            sudo installpkg $PACKAGE_NAME
-
-          Conteúdo principal:
-            /boot/vmlinuz-$RELEASE
-            /boot/System.map-$RELEASE
-            /boot/config-$RELEASE
-            /lib/modules/$RELEASE/
-            /usr/src/linux-$RELEASE/
-
-          XFS e Btrfs são compilados diretamente no kernel. O pacote não remove
-          o kernel anterior e não altera automaticamente systemd-boot, GRUB,
-          ELILO ou LILO.
-          EOF
-
+Este pacote NÃO substitui automaticamente o kernel antigo e NÃO altera
+GRUB, ELILO, LILO ou systemd-boot.
+EOF
           cat > "$PKGROOT/install/slack-desc" <<EOF
-          kernel-generic-lts618: kernel-generic-lts618 (Linux $RELEASE LTS generic)
-          kernel-generic-lts618:
-          kernel-generic-lts618: Linux $RELEASE da série 6.18 LTS para Slackware/Salix x86_64.
-          kernel-generic-lts618: Inclui kernel, módulos e fonte preparada para módulos externos.
-          kernel-generic-lts618: XFS e Btrfs são incorporados ao kernel para montagem confiável.
-          kernel-generic-lts618: Usa nome próprio para não substituir o kernel-generic da distribuição.
-          kernel-generic-lts618: Mantém nomes versionados e preserva kernels anteriores.
-          kernel-generic-lts618:
-          kernel-generic-lts618: Projeto: kernel-generic-6.18-lts-slackware-salix
-          kernel-generic-lts618: Fonte: kernel.org
-          kernel-generic-lts618:
-          EOF
-
+kernel-generic-lts618: kernel-generic-lts618 (Linux ${RELEASE} LTS)
+kernel-generic-lts618:
+kernel-generic-lts618: Kernel Linux ${RELEASE} x86_64 compilado em Slackware 15.0.
+kernel-generic-lts618: Destinado a sistemas Slackware e Salix.
+kernel-generic-lts618: Inclui o kernel e seus módulos correspondentes.
+kernel-generic-lts618: XFS e Btrfs são compilados diretamente no kernel.
+kernel-generic-lts618: Zstd também é incorporado para suporte confiável ao Btrfs.
+kernel-generic-lts618: Os arquivos de boot usam nomes versionados.
+kernel-generic-lts618: O pacote não remove kernels anteriormente instalados.
+kernel-generic-lts618:
+kernel-generic-lts618: Projeto kernel-generic-6.18-lts-slackware-salix
+EOF
           cat > "$PKGROOT/install/doinst.sh" <<EOF
-          #!/bin/sh
-          if [ -x /sbin/depmod ]; then
-            /sbin/depmod $RELEASE >/dev/null 2>&1 || true
-          fi
-          EOF
+#!/bin/sh
+if [ -x /sbin/depmod ]; then
+  /sbin/depmod ${RELEASE}
+fi
+exit 0
+EOF
           chmod 0755 "$PKGROOT/install/doinst.sh"
-
-          find "$PKGROOT" -type d -exec chmod 0755 {} +
           chmod 0644 \
-            "$PKGROOT/boot/vmlinuz-$RELEASE" \
-            "$PKGROOT/boot/System.map-$RELEASE" \
-            "$PKGROOT/boot/config-$RELEASE"
+            "$PKGROOT/boot/vmlinuz-${RELEASE}" \
+            "$PKGROOT/boot/System.map-${RELEASE}" \
+            "$PKGROOT/boot/config-${RELEASE}"
+          find "$PKGROOT" -type d -exec chmod 0755 {} \;
 
-      - name: Create native Slackware TXZ and validate layout
-        shell: bash
+      - name: Criar TXZ com makepkg nativo do Slackware
         run: |
-          set -euxo pipefail
-          mkdir -p output
-          PKGROOT="$GITHUB_WORKSPACE/build/pkgroot"
-          PACKAGE="$GITHUB_WORKSPACE/output/$PACKAGE_NAME"
-
-          case "$PACKAGE_NAME" in
-            kernel-generic-lts618-*-x86_64-*_custom.txz) ;;
-            *) echo "Invalid Slackware package name: $PACKAGE_NAME"; exit 1 ;;
-          esac
-
-          sudo chown -R 0:0 "$PKGROOT"
-
-          tar \
-            --format=gnu \
-            --owner=0 --group=0 --numeric-owner \
-            -C "$PKGROOT" \
-            -cJf "$PACKAGE" \
-            boot lib usr install
-
+          set -euo pipefail
+          PKGROOT="$GITHUB_WORKSPACE/build/package-root"
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          PACKAGE="$GITHUB_WORKSPACE/output/${PACKAGE_NAME}"
+          cd "$PKGROOT"
+          echo "makepkg usado: $(command -v makepkg)"
+          makepkg -l y -c n "$PACKAGE"
           test -s "$PACKAGE"
+          ls -lh "$PACKAGE"
 
-          tar -tJf "$PACKAGE" > output/package-contents.txt
-          grep -qx "install/slack-desc" output/package-contents.txt
-          grep -qx "install/doinst.sh" output/package-contents.txt
-          grep -qx "boot/vmlinuz-$KERNEL_VERSION" output/package-contents.txt
-          grep -qx "boot/System.map-$KERNEL_VERSION" output/package-contents.txt
-          grep -qx "boot/config-$KERNEL_VERSION" output/package-contents.txt
-          grep -q "^lib/modules/$KERNEL_VERSION/" output/package-contents.txt
-          grep -q "^usr/src/linux-$KERNEL_VERSION/" output/package-contents.txt
+      - name: Validar TXZ usando pkgtools do Slackware
+        run: |
+          set -euo pipefail
+          PACKAGE="$GITHUB_WORKSPACE/output/${PACKAGE_NAME}"
+          VERIFY="$GITHUB_WORKSPACE/build/verify-package"
+          rm -rf "$VERIFY"
+          mkdir -p "$VERIFY"
+          cd "$VERIFY"
+          explodepkg "$PACKAGE"
+          test -s "boot/vmlinuz-${KERNEL_VERSION}"
+          test -s "boot/System.map-${KERNEL_VERSION}"
+          test -s "boot/config-${KERNEL_VERSION}"
+          test -d "lib/modules/${KERNEL_VERSION}"
+          test -s "install/slack-desc"
+          test -s "install/doinst.sh"
+          echo "PACOTE SLACKWARE VALIDADO"
+          file "boot/vmlinuz-${KERNEL_VERSION}"
+          find "lib/modules/${KERNEL_VERSION}" -type f -name '*.ko' | wc -l
 
-          TESTROOT="$GITHUB_WORKSPACE/build/install-test-root"
-          rm -rf "$TESTROOT"
-          mkdir -p "$TESTROOT"
-          tar -xJf "$PACKAGE" -C "$TESTROOT"
+      - name: Gerar SHA256
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/output"
+          sha256sum "$PACKAGE_NAME" > "${PACKAGE_NAME}.sha256"
+          cat "${PACKAGE_NAME}.sha256"
 
-          test -s "$TESTROOT/boot/vmlinuz-$KERNEL_VERSION"
-          test -s "$TESTROOT/boot/System.map-$KERNEL_VERSION"
-          test -s "$TESTROOT/boot/config-$KERNEL_VERSION"
-          test -d "$TESTROOT/lib/modules/$KERNEL_VERSION"
-          test -d "$TESTROOT/usr/src/linux-$KERNEL_VERSION"
-          test -f "$TESTROOT/install/slack-desc"
-          test -x "$TESTROOT/install/doinst.sh"
-
-          sha256sum "$PACKAGE" > "$PACKAGE.sha256"
-          ls -lh "$PACKAGE" "$PACKAGE.sha256"
-          cat "$PACKAGE.sha256"
-
-      - name: Upload Actions artifact
+      - name: Upload do pacote
         uses: actions/upload-artifact@v4
         with:
-          name: kernel-generic-lts618-${{ env.KERNEL_VERSION }}-txz
+          name: kernel-slackware-${{ steps.version.outputs.kernel_version }}
           path: |
-            output/${{ env.PACKAGE_NAME }}
-            output/${{ env.PACKAGE_NAME }}.sha256
-            output/package-contents.txt
-          if-no-files-found: error
+            output/${{ steps.version.outputs.package_name }}
+            output/${{ steps.version.outputs.package_name }}.sha256
           compression-level: 0
+          if-no-files-found: error
 
-      - name: Publish GitHub Release
-        shell: bash
+  publish:
+    name: Publicar TXZ
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar pacote gerado no Slackware
+        uses: actions/download-artifact@v4
+        with:
+          name: kernel-slackware-${{ needs.build.outputs.kernel_version }}
+          path: release
+
+      - name: Mostrar artefatos
+        run: ls -lh release
+
+      - name: Publicar GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.kernel_version }}
+          PACKAGE: ${{ needs.build.outputs.package_name }}
         run: |
-          set -euxo pipefail
-          PACKAGE="output/$PACKAGE_NAME"
-          CHECKSUM="$PACKAGE.sha256"
-
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$PACKAGE" "$CHECKSUM" --clobber
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload \
+              "$TAG" \
+              "release/$PACKAGE" \
+              "release/$PACKAGE.sha256" \
+              --clobber
           else
-            gh release create "$RELEASE_TAG" "$PACKAGE" "$CHECKSUM" \
-              --title "Linux $KERNEL_VERSION LTS para Slackware/Salix" \
-              --notes "Pacote TXZ x86_64 instalável nativamente em Slackware/Salix com: sudo installpkg $PACKAGE_NAME. Inclui kernel, módulos e fonte preparada para módulos externos. XFS e Btrfs são compilados diretamente no kernel. O nome kernel-generic-lts618 evita substituir o kernel-generic da distribuição. O pacote não altera automaticamente o gerenciador de boot e preserva o kernel anterior."
+            gh release create \
+              "$TAG" \
+              "release/$PACKAGE" \
+              "release/$PACKAGE.sha256" \
+              --title "Linux $VERSION para Slackware/Salix" \
+              --notes "Kernel Linux $VERSION da série 6.18 LTS. Compilado e empacotado dentro de Slackware 15.0 usando o makepkg nativo do Slackware. Inclui kernel e módulos. XFS, Btrfs e Zstd incorporados ao kernel."
           fi
