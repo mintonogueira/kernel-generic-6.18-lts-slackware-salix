@@ -4,34 +4,86 @@ set -Eeuo pipefail
 JOBS="${JOBS:-2}"
 WORKROOT="${WORKROOT:-/work}"
 OUTPUT="$WORKROOT/output"
-BUILDROOT="${BUILDROOT:-/kernel-build}"
+BUILDROOT="${BUILDROOT:-$WORKROOT/.kernel-build}"
 DOWNLOAD="$BUILDROOT/download"
 SRCROOT="$BUILDROOT/src"
 PKGROOT="$BUILDROOT/pkgroot"
 VERIFY="$BUILDROOT/verify"
 TMPDIR="$BUILDROOT/tmp"
+CONFIG_SHA256="d5ef048c336d06d66673cbe425519a84f67748383db91c132c41e702a04dfc77"
 
-mkdir -p "$OUTPUT" "$DOWNLOAD" "$SRCROOT" "$TMPDIR"
-chmod 1777 "$TMPDIR"
-export TMPDIR
-
+mkdir -p "$OUTPUT"
 : > "$OUTPUT/build.log"
 exec > >(tee -a "$OUTPUT/build.log") 2>&1
 
-trap 'rc=$?; echo; echo "ERRO na linha $LINENO (status $rc)"; df -h || true; exit $rc' ERR
+trap 'rc=$?; echo; echo "ERRO na linha $LINENO (status $rc)"; echo; df -h / /work 2>/dev/null || true; exit $rc' ERR
 
 log() {
   printf '\n==== %s ====\n' "$*"
 }
 
-log "Ambiente Slackware 15.0 completo"
+slackpkg_run() {
+  set +e
+  "$@"
+  rc=$?
+  set -e
+
+  # O slackpkg usa 20 para alguns estados não fatais (por exemplo, nada a fazer).
+  if [ "$rc" -ne 0 ] && [ "$rc" -ne 20 ]; then
+    echo "ERRO: slackpkg terminou com status $rc: $*"
+    return "$rc"
+  fi
+  return 0
+}
+
+log "Ambiente Slackware 15.0"
 cat /etc/slackware-version
 grep -q '^Slackware 15\.0' /etc/slackware-version
 test "$(uname -m)" = "x86_64"
 echo "Arquitetura: $(uname -m)"
+echo "Jobs: $JOBS"
+df -h / /work || true
 
-log "Validando toolchain já presente na imagem full"
-for cmd in gcc ld make bc bison flex perl openssl makepkg explodepkg depmod xz wget sha256sum awk sed grep sort tar strip file; do
+log "Preparando slackpkg para ambiente não interativo"
+
+# Usa explicitamente um mirror da árvore estável 15.0.
+printf '%s\n' 'https://mirrors.kernel.org/slackware/slackware64-15.0/' > /etc/slackpkg/mirrors
+
+# A correção abaixo é a mesma ideia usada pelo projeto da imagem
+# aclemons/slackware para evitar falha de stty em builds não interativos.
+if [ -f /usr/libexec/slackpkg/functions.d/post-functions.sh ]; then
+  sed -i 's,SIZE=\$( stty size )$,SIZE=$( [[ $- != *i* ]] \&\& stty size || echo "0 0"),' \
+    /usr/libexec/slackpkg/functions.d/post-functions.sh || true
+fi
+
+export TERSE=0
+SLACKPKG=(slackpkg -default_answer=yes -batch=on)
+
+slackpkg_run "${SLACKPKG[@]}" update
+
+# Não precisamos de uma instalação desktop completa. Para compilar kernel no
+# Slackware, instalamos as séries de base, aplicações de console,
+# desenvolvimento, bibliotecas e rede. Isso mantém as dependências do
+# toolchain consistentes sem baixar KDE/X/XAP/desktop.
+if grep -q '^DOWNLOAD_ALL=on' /etc/slackpkg/slackpkg.conf; then
+  sed -i 's/^DOWNLOAD_ALL=on/DOWNLOAD_ALL=off/' /etc/slackpkg/slackpkg.conf
+fi
+
+for series in a ap d l n; do
+  log "Instalando série Slackware: $series"
+  slackpkg_run "${SLACKPKG[@]}" install "$series"/*
+  rm -rf /var/cache/packages/* || true
+done
+
+update-ca-certificates || true
+ldconfig
+rm -rf /var/cache/packages/* || true
+
+log "Validando toolchain Slackware 15.0"
+for cmd in \
+  gcc ld make bc bison flex perl openssl \
+  makepkg explodepkg depmod xz wget sha256sum \
+  awk sed grep sort tar strip file; do
   command -v "$cmd"
 done
 
@@ -43,6 +95,12 @@ depmod -V
 
 test -f /usr/include/libelf.h
 test -f /usr/include/openssl/opensslv.h
+
+rm -rf "$BUILDROOT"
+mkdir -p "$DOWNLOAD" "$SRCROOT" "$PKGROOT" "$VERIFY" "$TMPDIR"
+chmod 1777 "$TMPDIR"
+export TMPDIR
+
 printf '#include <stdio.h>\nint main(void){puts("toolchain-ok");return 0;}\n' > "$TMPDIR/toolchain-test.c"
 gcc "$TMPDIR/toolchain-test.c" -o "$TMPDIR/toolchain-test"
 "$TMPDIR/toolchain-test"
@@ -68,20 +126,21 @@ echo "Kernel: $KERNEL_VERSION"
 echo "Pacote: $PACKAGE_NAME"
 
 log "Baixando e verificando fonte do kernel"
-rm -f "$DOWNLOAD/$TARBALL" "$DOWNLOAD/sha256sums.asc" "$DOWNLOAD/$CONFIG_NAME"
-wget -O "$DOWNLOAD/$TARBALL" "https://cdn.kernel.org/pub/linux/kernel/v6.x/$TARBALL"
-wget -O "$DOWNLOAD/sha256sums.asc" "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+wget --tries=5 --waitretry=2 -O "$DOWNLOAD/$TARBALL" \
+  "https://cdn.kernel.org/pub/linux/kernel/v6.x/$TARBALL"
+wget --tries=5 --waitretry=2 -O "$DOWNLOAD/sha256sums.asc" \
+  "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+
 EXPECTED="$(awk -v f="$TARBALL" '$2 == f {print $1; exit}' "$DOWNLOAD/sha256sums.asc")"
 test -n "$EXPECTED"
 printf '%s  %s\n' "$EXPECTED" "$DOWNLOAD/$TARBALL" | sha256sum -c -
 
-log "Baixando configuração oficial do Slackware64 15.0"
-wget -O "$DOWNLOAD/$CONFIG_NAME" "$CONFIG_URL"
+log "Baixando e verificando config oficial Slackware64 15.0"
+wget --tries=5 --waitretry=2 -O "$DOWNLOAD/$CONFIG_NAME" "$CONFIG_URL"
 test -s "$DOWNLOAD/$CONFIG_NAME"
+printf '%s  %s\n' "$CONFIG_SHA256" "$DOWNLOAD/$CONFIG_NAME" | sha256sum -c -
 
 log "Preparando árvore do kernel"
-rm -rf "$SRCROOT" "$PKGROOT" "$VERIFY"
-mkdir -p "$SRCROOT" "$PKGROOT" "$VERIFY"
 tar -xJf "$DOWNLOAD/$TARBALL" -C "$SRCROOT"
 SRC="$SRCROOT/linux-$KERNEL_VERSION"
 cd "$SRC"
@@ -93,11 +152,11 @@ CFG=./scripts/config
 "$CFG" --disable LOCALVERSION_AUTO
 "$CFG" --disable WERROR || true
 
-# Mantém suporte amplo a módulos e preserva a política de versionamento do config-base.
+# Módulos permanecem suportados; a política de MODVERSIONS vem do config-base.
 "$CFG" --enable MODULES
 "$CFG" --enable MODULE_UNLOAD
 
-# Remove dependências opcionais que não são necessárias para este pacote.
+# Evita dependências opcionais que não agregam valor ao pacote final.
 "$CFG" --disable MODULE_SIG || true
 "$CFG" --disable MODULE_SIG_ALL || true
 "$CFG" --set-str SYSTEM_TRUSTED_KEYS ""
@@ -110,23 +169,24 @@ CFG=./scripts/config
 "$CFG" --disable LTO || true
 "$CFG" --enable LTO_NONE || true
 
-# Módulos sem compressão para máxima compatibilidade com o kmod do Salix 15.0.
+# Módulos sem compressão: compatibilidade direta com kmod do Slackware/Salix 15.0.
 "$CFG" --enable MODULE_COMPRESS_NONE || true
 "$CFG" --disable MODULE_COMPRESS_GZIP || true
 "$CFG" --disable MODULE_COMPRESS_XZ || true
 "$CFG" --disable MODULE_COMPRESS_ZSTD || true
 
-# Stack crítica incorporada ao kernel para permitir boot do Salix sem initrd.
+# Stack crítica incorporada para boot do Salix sem depender de initrd.
 for sym in \
   BLK_DEV_INITRD DEVTMPFS DEVTMPFS_MOUNT TMPFS \
   EFI EFI_STUB EFIVAR_FS EFI_PARTITION \
   SCSI BLK_DEV_SD ATA SATA_AHCI \
   BLK_DEV_DM DM_CRYPT \
-  XFS_FS BTRFS_FS EXT4_FS; do
+  XFS_FS BTRFS_FS EXT4_FS \
+  ZSTD_COMPRESS ZSTD_DECOMPRESS; do
   "$CFG" --enable "$sym"
 done
 
-# Suporte adicional comum permanece disponível.
+# Suporte adicional comum.
 for sym in \
   NVME_CORE BLK_DEV_NVME FAT_FS VFAT_FS \
   USB_SUPPORT USB USB_XHCI_HCD USB_XHCI_PCI USB_STORAGE \
@@ -139,7 +199,8 @@ make olddefconfig
 log "Validando configuração crítica"
 for symbol in \
   MODULES SCSI BLK_DEV_SD ATA SATA_AHCI \
-  BLK_DEV_DM DM_CRYPT XFS_FS BTRFS_FS EXT4_FS EFI EFI_STUB; do
+  BLK_DEV_DM DM_CRYPT XFS_FS BTRFS_FS EXT4_FS \
+  EFI EFI_STUB ZSTD_COMPRESS ZSTD_DECOMPRESS; do
   if ! grep -q "^CONFIG_${symbol}=y$" .config; then
     echo "ERRO: CONFIG_${symbol} não ficou =y"
     grep -E "^CONFIG_${symbol}=|^# CONFIG_${symbol} is not set" .config || true
@@ -151,7 +212,12 @@ RELEASE="$(make -s kernelrelease)"
 test "$RELEASE" = "$KERNEL_VERSION"
 cp .config "$OUTPUT/config-${RELEASE}.final"
 
+log "Espaço antes da compilação"
+df -h / /work || true
+
 log "Compilando com ${JOBS} jobs"
+export KBUILD_BUILD_USER=github-actions
+export KBUILD_BUILD_HOST=slackware15
 make -j"$JOBS" bzImage modules
 
 test -s arch/x86/boot/bzImage
@@ -175,8 +241,8 @@ rm -f "$PKGROOT/lib/modules/$RELEASE/build" "$PKGROOT/lib/modules/$RELEASE/sourc
 cat > "$PKGROOT/usr/doc/kernel-generic-lts618-$RELEASE/README" <<EOF_README
 Linux $RELEASE para Slackware/Salix x86_64.
 
-Compilado e empacotado dentro de um ambiente Slackware 15.0 completo.
-O arquivo TXZ é criado pelo makepkg nativo do Slackware.
+Compilado dentro de Slackware 15.0 e empacotado com o makepkg nativo do
+Slackware.
 
 Conteúdo principal:
   /boot/vmlinuz-$RELEASE
@@ -193,7 +259,7 @@ cat > "$PKGROOT/install/slack-desc" <<EOF_DESC
 kernel-generic-lts618: kernel-generic-lts618 (Linux $RELEASE LTS)
 kernel-generic-lts618:
 kernel-generic-lts618: Kernel Linux $RELEASE para Slackware/Salix x86_64.
-kernel-generic-lts618: Compilado dentro de Slackware 15.0 completo.
+kernel-generic-lts618: Compilado dentro de Slackware 15.0.
 kernel-generic-lts618: Empacotado com o makepkg nativo do Slackware.
 kernel-generic-lts618: Inclui o kernel e seus módulos correspondentes.
 kernel-generic-lts618: XFS e Btrfs são incorporados diretamente ao kernel.
@@ -252,7 +318,10 @@ CONFIG_NAME=$CONFIG_NAME
 MODULE_COUNT=$MODULE_COUNT
 EOF_META
 
+chmod -R a+rX "$OUTPUT"
+
 log "Pacote concluído"
 ls -lh "$PACKAGE_NAME" "$PACKAGE_NAME.sha256" "config-${RELEASE}.final"
 cat "$PACKAGE_NAME.sha256"
 echo "Módulos no pacote: $MODULE_COUNT"
+df -h / /work || true
