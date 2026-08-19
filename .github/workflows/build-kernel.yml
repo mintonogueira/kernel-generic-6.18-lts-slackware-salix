@@ -1,0 +1,303 @@
+name: Build Kernel 6.18 TXZ
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+env:
+  SERIES: "6.18"
+  JOBS: "2"
+
+jobs:
+  build:
+    name: Build kernel 6.18 LTS and TXZ
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo apt-get clean
+          df -h /
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex libssl-dev libelf-dev \
+            dwarves curl xz-utils zstd kmod cpio rsync perl python3 \
+            pkg-config file ca-certificates git gh
+
+      - name: Detect latest Linux 6.18.x
+        shell: bash
+        run: |
+          set -euo pipefail
+          INDEX="$(curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/)"
+          VERSION="$(printf '%s\n' "$INDEX" \
+            | grep -oE 'linux-6\.18\.[0-9]+\.tar\.xz' \
+            | sed -e 's/^linux-//' -e 's/\.tar\.xz$//' \
+            | sort -Vu \
+            | tail -n 1)"
+          test -n "$VERSION"
+          echo "KERNEL_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "KERNEL_TARBALL=linux-$VERSION.tar.xz" >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=kernel-generic-$VERSION-x86_64-1_custom.txz" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=kernel-$VERSION" >> "$GITHUB_ENV"
+          echo "Versão detectada: $VERSION"
+
+      - name: Download and verify kernel source
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build/downloads
+          cd build/downloads
+          curl -fL --retry 3 -o "$KERNEL_TARBALL" \
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/$KERNEL_TARBALL"
+          curl -fL --retry 3 -o sha256sums.asc \
+            "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
+          EXPECTED="$(awk -v f="$KERNEL_TARBALL" '$2 == f {print $1; exit}' sha256sums.asc)"
+          test -n "$EXPECTED"
+          printf '%s  %s\n' "$EXPECTED" "$KERNEL_TARBALL" | sha256sum -c -
+          cd ..
+          tar -xJf "downloads/$KERNEL_TARBALL"
+
+      - name: Configure generic Slackware/Salix kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "build/linux-$KERNEL_VERSION"
+
+          BASE_CONFIG="$(find /boot -maxdepth 1 -type f -name 'config-*' 2>/dev/null | sort -V | tail -n 1 || true)"
+          if [ -n "$BASE_CONFIG" ] && [ -r "$BASE_CONFIG" ]; then
+            echo "Using generic runner config as broad hardware baseline: $BASE_CONFIG"
+            cp "$BASE_CONFIG" .config
+            make olddefconfig
+          else
+            echo "No /boot config found; using x86_64_defconfig"
+            make x86_64_defconfig
+          fi
+
+          CFG=./scripts/config
+
+          "$CFG" --set-str LOCALVERSION ""
+          "$CFG" --disable LOCALVERSION_AUTO
+
+          "$CFG" --enable MODULES
+          "$CFG" --enable MODULE_UNLOAD
+          "$CFG" --disable MODVERSIONS
+          "$CFG" --disable MODULE_SIG
+          "$CFG" --disable MODULE_SIG_ALL
+          "$CFG" --enable MODULE_COMPRESS_NONE || true
+          "$CFG" --disable MODULE_COMPRESS_GZIP || true
+          "$CFG" --disable MODULE_COMPRESS_XZ || true
+          "$CFG" --disable MODULE_COMPRESS_ZSTD || true
+
+          "$CFG" --set-str SYSTEM_TRUSTED_KEYS ""
+          "$CFG" --set-str SYSTEM_REVOCATION_KEYS ""
+          "$CFG" --disable DEBUG_INFO
+          "$CFG" --disable DEBUG_INFO_BTF
+          "$CFG" --disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT || true
+          "$CFG" --disable RUST || true
+          "$CFG" --disable LTO || true
+          "$CFG" --enable LTO_NONE || true
+
+          "$CFG" --enable BLK_DEV_INITRD
+          "$CFG" --enable DEVTMPFS
+          "$CFG" --enable DEVTMPFS_MOUNT
+          "$CFG" --enable TMPFS
+
+          "$CFG" --enable EFI
+          "$CFG" --enable EFI_STUB
+          "$CFG" --enable EFIVAR_FS
+          "$CFG" --enable EFI_PARTITION
+
+          "$CFG" --enable SCSI
+          "$CFG" --enable BLK_DEV_SD
+          "$CFG" --enable ATA
+          "$CFG" --enable SATA_AHCI
+          "$CFG" --enable NVME_CORE
+          "$CFG" --enable BLK_DEV_NVME
+          "$CFG" --enable BLK_DEV_DM
+          "$CFG" --enable DM_CRYPT
+
+          "$CFG" --enable XFS_FS
+          "$CFG" --enable BTRFS_FS
+          "$CFG" --enable EXT4_FS
+          "$CFG" --enable FAT_FS
+          "$CFG" --enable VFAT_FS
+
+          for OPT in \
+            USB_SUPPORT USB USB_XHCI_HCD USB_XHCI_PCI \
+            USB_EHCI_HCD USB_EHCI_PCI USB_OHCI_HCD USB_OHCI_HCD_PCI \
+            USB_UHCI_HCD USB_STORAGE HID HID_GENERIC USB_HID \
+            CRYPTO CRYPTO_AES CRYPTO_XTS CRYPTO_SHA256 CRYPTO_SHA512
+          do
+            "$CFG" --enable "$OPT" || true
+          done
+
+          make olddefconfig
+
+          for SYMBOL in MODULES DEVTMPFS SCSI BLK_DEV_SD ATA SATA_AHCI XFS_FS BTRFS_FS EFI EFI_STUB; do
+            grep -q "^CONFIG_${SYMBOL}=y$" .config || {
+              echo "Required CONFIG_${SYMBOL}=y not satisfied"
+              exit 1
+            }
+          done
+
+          make -s kernelrelease | tee ../kernelrelease.txt
+          cp .config "../config-$KERNEL_VERSION.final"
+
+          echo "Critical configuration:"
+          grep -E '^CONFIG_(MODULES|MODVERSIONS|SCSI|BLK_DEV_SD|ATA|SATA_AHCI|NVME_CORE|BLK_DEV_NVME|BLK_DEV_DM|DM_CRYPT|XFS_FS|BTRFS_FS|EFI|EFI_STUB|ZSTD_COMPRESS)=' .config || true
+
+      - name: Build kernel and modules with 2 jobs
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "build/linux-$KERNEL_VERSION"
+          make -j"$JOBS" bzImage modules
+          test -s arch/x86/boot/bzImage
+          test -s System.map
+
+      - name: Assemble Slackware/Salix package tree
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "build/linux-$KERNEL_VERSION"
+          RELEASE="$(make -s kernelrelease)"
+          PKGROOT="$GITHUB_WORKSPACE/build/pkgroot"
+
+          rm -rf "$PKGROOT"
+          mkdir -p \
+            "$PKGROOT/boot" \
+            "$PKGROOT/lib/modules" \
+            "$PKGROOT/usr/src" \
+            "$PKGROOT/usr/doc/kernel-generic-$RELEASE" \
+            "$PKGROOT/install"
+
+          cp arch/x86/boot/bzImage "$PKGROOT/boot/vmlinuz-$RELEASE"
+          cp System.map "$PKGROOT/boot/System.map-$RELEASE"
+          cp .config "$PKGROOT/boot/config-$RELEASE"
+
+          make modules_install INSTALL_MOD_PATH="$PKGROOT" INSTALL_MOD_STRIP=1
+
+          rm -f "$PKGROOT/lib/modules/$RELEASE/build" "$PKGROOT/lib/modules/$RELEASE/source"
+
+          make clean
+          cp "$GITHUB_WORKSPACE/build/config-$KERNEL_VERSION.final" .config
+          make olddefconfig
+          make modules_prepare
+
+          SRCROOT="$PKGROOT/usr/src/linux-$RELEASE"
+          mkdir -p "$SRCROOT"
+          rsync -a \
+            --exclude='.git' \
+            --exclude='Documentation' \
+            --exclude='tools' \
+            --exclude='samples' \
+            ./ "$SRCROOT/"
+
+          ln -s "/usr/src/linux-$RELEASE" "$PKGROOT/lib/modules/$RELEASE/build"
+          ln -s "/usr/src/linux-$RELEASE" "$PKGROOT/lib/modules/$RELEASE/source"
+
+          cat > "$PKGROOT/usr/doc/kernel-generic-$RELEASE/README" <<EOF
+          Linux $RELEASE - pacote genérico para Slackware/Salix x86_64.
+
+          Inclui kernel, System.map, configuração, módulos e árvore preparada
+          para compilação de módulos externos em /usr/src/linux-$RELEASE.
+
+          XFS e Btrfs são compilados diretamente no kernel. O pacote não remove
+          o kernel anterior e não altera automaticamente systemd-boot, GRUB,
+          ELILO ou LILO.
+          EOF
+
+          cat > "$PKGROOT/install/slack-desc" <<EOF
+          kernel-generic: kernel-generic (Linux $RELEASE LTS generic)
+          kernel-generic:
+          kernel-generic: Linux $RELEASE da série 6.18 LTS para Slackware/Salix x86_64.
+          kernel-generic: Inclui kernel, módulos e fonte preparada para módulos externos.
+          kernel-generic: XFS e Btrfs são incorporados ao kernel para montagem confiável.
+          kernel-generic: Mantém nomes versionados e preserva kernels anteriores.
+          kernel-generic:
+          kernel-generic: Projeto: kernel-generic-6.18-lts-slackware-salix
+          kernel-generic: Fonte do kernel: kernel.org
+          kernel-generic:
+          kernel-generic:
+          EOF
+
+          cat > "$PKGROOT/install/doinst.sh" <<EOF
+          #!/bin/sh
+          if [ -x /sbin/depmod ]; then
+            /sbin/depmod $RELEASE >/dev/null 2>&1 || true
+          fi
+          EOF
+          chmod 0755 "$PKGROOT/install/doinst.sh"
+
+          find "$PKGROOT" -type d -exec chmod 0755 {} +
+          chmod 0644 \
+            "$PKGROOT/boot/vmlinuz-$RELEASE" \
+            "$PKGROOT/boot/System.map-$RELEASE" \
+            "$PKGROOT/boot/config-$RELEASE"
+
+      - name: Create and validate TXZ
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p output
+          PKGROOT="$GITHUB_WORKSPACE/build/pkgroot"
+          PACKAGE="$GITHUB_WORKSPACE/output/$PACKAGE_NAME"
+
+          tar --format=gnu --owner=0 --group=0 --numeric-owner \
+            -C "$PKGROOT" -cJf "$PACKAGE" .
+
+          test -s "$PACKAGE"
+          tar -tf "$PACKAGE" | grep -q "boot/vmlinuz-$KERNEL_VERSION"
+          tar -tf "$PACKAGE" | grep -q "lib/modules/$KERNEL_VERSION/"
+          tar -tf "$PACKAGE" | grep -q "usr/src/linux-$KERNEL_VERSION/"
+
+          sha256sum "$PACKAGE" > "$PACKAGE.sha256"
+          ls -lh "$PACKAGE" "$PACKAGE.sha256"
+          cat "$PACKAGE.sha256"
+
+      - name: Upload Actions artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-generic-${{ env.KERNEL_VERSION }}-txz
+          path: |
+            output/${{ env.PACKAGE_NAME }}
+            output/${{ env.PACKAGE_NAME }}.sha256
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euxo pipefail
+          PACKAGE="output/$PACKAGE_NAME"
+          CHECKSUM="$PACKAGE.sha256"
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$PACKAGE" "$CHECKSUM" --clobber
+          else
+            gh release create "$RELEASE_TAG" "$PACKAGE" "$CHECKSUM" \
+              --title "Linux $KERNEL_VERSION LTS para Slackware/Salix" \
+              --notes "Pacote TXZ genérico x86_64 do Linux $KERNEL_VERSION, série 6.18 LTS. Inclui kernel, módulos e fonte preparada para módulos externos. XFS e Btrfs são compilados diretamente no kernel. O pacote não altera automaticamente o gerenciador de boot e preserva o kernel anterior."
+          fi
