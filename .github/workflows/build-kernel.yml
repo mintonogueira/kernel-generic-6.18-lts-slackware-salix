@@ -18,13 +18,13 @@ concurrency:
 
 env:
   JOBS: "2"
-  SLACKWARE_IMAGE: "aclemons/slackware:15.0-full"
+  SLACKWARE_IMAGE: "aclemons/slackware:15.0"
 
 jobs:
   build:
-    name: Compilar e empacotar no Slackware 15.0 full
+    name: Compilar e empacotar no Slackware 15.0
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
 
     outputs:
       kernel_version: ${{ steps.meta.outputs.kernel_version }}
@@ -36,12 +36,17 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          echo "=== Antes da limpeza ==="
+          df -h /
+
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean
-          docker system prune -af || true
+          docker system prune -af --volumes || true
+
+          echo "=== Depois da limpeza ==="
           df -h /
 
       - name: Checkout
@@ -54,7 +59,7 @@ jobs:
           bash -n .github/scripts/build-kernel-slackware.sh
           chmod +x .github/scripts/build-kernel-slackware.sh
 
-      - name: Baixar Slackware 15.0 completo
+      - name: Baixar imagem base Slackware 15.0
         shell: bash
         run: |
           set -euxo pipefail
@@ -67,15 +72,19 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          rm -rf output
-          mkdir -p output
 
+          rm -rf output .kernel-build
+          mkdir -p output .kernel-build
+
+          # O toolchain é instalado dentro do Slackware 15.0. A árvore pesada
+          # do kernel fica no bind mount /work/.kernel-build, e não na camada
+          # gravável do Docker.
           docker run --rm \
             --platform linux/amd64 \
             --user 0:0 \
             -e JOBS="$JOBS" \
             -e WORKROOT=/work \
-            -e BUILDROOT=/kernel-build \
+            -e BUILDROOT=/work/.kernel-build \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$SLACKWARE_IMAGE" \
@@ -97,15 +106,24 @@ jobs:
             echo "image=$SLACKWARE_IMAGE"
             echo "jobs=$JOBS"
             echo
+            echo "Espaço em disco:"
+            df -h /
+            echo
+            echo "Uso da árvore de build:"
+            du -sh .kernel-build 2>/dev/null || true
+            echo
 
             if [ -s output/build.log ]; then
-              echo "Últimas 2000 linhas de output/build.log:"
+              echo "Últimas 2500 linhas de output/build.log:"
               echo "-----------------------------------------"
-              tail -n 2000 output/build.log
+              tail -n 2500 output/build.log
             else
-              echo "output/build.log não foi criado; a falha ocorreu antes ou durante a inicialização do container."
+              echo "output/build.log não foi criado."
+              echo "A falha ocorreu antes de o script de build iniciar."
             fi
           } > .ci/last-failure.log
+
+          cat .ci/last-failure.log | tail -n 250
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -113,10 +131,9 @@ jobs:
 
           if ! git diff --cached --quiet; then
             git commit -m "CI: registra última falha do build do kernel"
+            git pull --rebase origin main || true
             git push origin HEAD:main || true
           fi
-
-          cat .ci/last-failure.log | tail -n 200
 
       - name: Upload do log em caso de falha
         if: failure()
@@ -158,6 +175,7 @@ jobs:
             sha256sum -c "$PACKAGE_NAME.sha256"
           )
           ls -lh output/
+          df -h /
 
       - name: Upload do pacote
         uses: actions/upload-artifact@v4
@@ -206,5 +224,5 @@ jobs:
               "release/$PACKAGE" \
               "release/$PACKAGE.sha256" \
               --title "Linux $VERSION para Slackware/Salix" \
-              --notes "Pacote TXZ x86_64 compilado e empacotado dentro de Slackware 15.0 completo, usando o makepkg nativo do Slackware. Inclui kernel e módulos correspondentes. XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in. Instalação: sudo installpkg $PACKAGE"
+              --notes "Pacote TXZ x86_64 compilado dentro de Slackware 15.0 e criado com o makepkg nativo do Slackware. Inclui kernel e módulos correspondentes. XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in. Instalação: sudo installpkg $PACKAGE"
           fi
