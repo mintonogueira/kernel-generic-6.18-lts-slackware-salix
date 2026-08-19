@@ -17,12 +17,12 @@ concurrency:
 
 env:
   JOBS: "2"
-  SLACKWARE_IMAGE_PRIMARY: "registry.slackware.nl/slackware/slackware-builder:15.0"
-  SLACKWARE_IMAGE_FALLBACK: "aclemons/slackware:15.0-full"
+  SLACKWARE_IMAGE: "aclemons/slackware:15.0"
+  SLACKWARE_CONFIG_SHA256: "d5ef048c336d06d66673cbe425519a84f67748383db91c132c41e702a04dfc77"
 
 jobs:
   build:
-    name: Build e makepkg dentro do Slackware 15.0
+    name: Compilar e empacotar dentro do Slackware 15.0
     runs-on: ubuntu-latest
     timeout-minutes: 300
 
@@ -41,6 +41,7 @@ jobs:
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean
+          docker system prune -af || true
           df -h /
 
       - name: Checkout
@@ -53,7 +54,6 @@ jobs:
           set -euo pipefail
 
           INDEX="$(curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/)"
-
           VERSION="$(
             printf '%s\n' "$INDEX" \
               | grep -oE 'linux-6\.18\.[0-9]+\.tar\.xz' \
@@ -75,12 +75,15 @@ jobs:
           echo "PACKAGE_NAME=$PACKAGE_NAME" >> "$GITHUB_ENV"
           echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
 
-      - name: Baixar fontes e configuração Slackware
+          echo "Kernel: $VERSION"
+          echo "Pacote: $PACKAGE_NAME"
+
+      - name: Baixar e verificar fontes
         shell: bash
         run: |
           set -euxo pipefail
 
-          mkdir -p input output build
+          mkdir -p input output build tmp
           TARBALL="linux-${KERNEL_VERSION}.tar.xz"
 
           curl -fL --retry 4 --retry-delay 3 \
@@ -91,61 +94,108 @@ jobs:
             -o input/sha256sums.asc \
             "https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc"
 
-          EXPECTED="$(
-            awk -v f="$TARBALL" '$2 == f {print $1; exit}' input/sha256sums.asc
-          )"
-
+          EXPECTED="$(awk -v f="$TARBALL" '$2 == f {print $1; exit}' input/sha256sums.asc)"
           test -n "$EXPECTED"
           printf '%s  %s\n' "$EXPECTED" "input/$TARBALL" | sha256sum -c -
 
+          # Configuração huge oficial do Slackware64 15.0. É uma base ampla e
+          # compatível com o toolchain do próprio Slackware 15.0.
           curl -fL --retry 4 --retry-delay 3 \
-            -o input/slackware-generic.config \
-            "https://mirrors.slackware.com/slackware/slackware64-current/kernels/generic.s/config"
+            -o input/slackware-15.0.config \
+            "https://mirrors.kernel.org/slackware/slackware64-15.0/kernels/huge.s/config"
 
-          test -s input/slackware-generic.config
+          printf '%s  %s\n' \
+            "$SLACKWARE_CONFIG_SHA256" \
+            input/slackware-15.0.config \
+            | sha256sum -c -
 
-      - name: Selecionar container Slackware
+      - name: Baixar container Slackware 15.0
         shell: bash
         run: |
           set -euxo pipefail
+          docker pull --platform linux/amd64 "$SLACKWARE_IMAGE"
+          docker image inspect "$SLACKWARE_IMAGE" >/dev/null
+          docker images "$SLACKWARE_IMAGE"
+          df -h /
 
-          if docker pull "$SLACKWARE_IMAGE_PRIMARY"; then
-            IMAGE="$SLACKWARE_IMAGE_PRIMARY"
-          else
-            echo "Registry Slackware indisponível; usando fallback Slackware 15.0."
-            docker pull "$SLACKWARE_IMAGE_FALLBACK"
-            IMAGE="$SLACKWARE_IMAGE_FALLBACK"
-          fi
-
-          echo "SLACKWARE_IMAGE_SELECTED=$IMAGE" >> "$GITHUB_ENV"
-          echo "Container selecionado: $IMAGE"
-
-      - name: Compilar e gerar TXZ dentro do Slackware
+      - name: Compilar kernel e criar TXZ dentro do Slackware 15.0
         shell: bash
         run: |
           set -euxo pipefail
 
           docker run --rm \
+            --platform linux/amd64 \
             --user 0:0 \
             -e KERNEL_VERSION="$KERNEL_VERSION" \
             -e PACKAGE_NAME="$PACKAGE_NAME" \
             -e JOBS="$JOBS" \
+            -e TMPDIR=/work/tmp \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
-            "$SLACKWARE_IMAGE_SELECTED" \
+            "$SLACKWARE_IMAGE" \
             /bin/bash -lc '
               set -euxo pipefail
 
-              echo "=== Slackware build environment ==="
+              echo "========================================"
+              echo " AMBIENTE DE BUILD"
+              echo "========================================"
               cat /etc/slackware-version
+              uname -m
               test "$(uname -m)" = "x86_64"
 
-              for CMD in gcc ld make makepkg explodepkg xz sha256sum; do
+              echo "========================================"
+              echo " INSTALANDO TOOLCHAIN SLACKWARE 15.0"
+              echo "========================================"
+
+              SLACKPKG="slackpkg -batch=on -default_answer=y"
+              $SLACKPKG update gpg || true
+              $SLACKPKG update
+
+              $SLACKPKG install \
+                pkgtools \
+                ca-certificates \
+                binutils \
+                gcc \
+                make \
+                bc \
+                bison \
+                flex \
+                m4 \
+                perl \
+                python3 \
+                pkg-config \
+                openssl \
+                openssl-solibs \
+                elfutils \
+                gmp \
+                mpfr \
+                libmpc \
+                guile \
+                gc \
+                libunistring \
+                zlib \
+                bzip2 \
+                xz \
+                zstd \
+                kmod
+
+              echo "========================================"
+              echo " VALIDANDO TOOLCHAIN"
+              echo "========================================"
+
+              for CMD in gcc ld make bc bison flex perl python3 pkg-config openssl makepkg explodepkg xz depmod; do
                 command -v "$CMD"
               done
 
               gcc --version | head -1
+              ld -v
               make --version | head -1
+              python3 --version
+              openssl version
+              depmod -V
+
+              mkdir -p /work/tmp /work/build /work/output
+              chmod 1777 /work/tmp
 
               TARBALL="linux-${KERNEL_VERSION}.tar.xz"
               SRC="/work/build/linux-${KERNEL_VERSION}"
@@ -156,9 +206,9 @@ jobs:
 
               cd /work/build
               tar -xJf "/work/input/${TARBALL}"
-
               cd "$SRC"
-              cp /work/input/slackware-generic.config .config
+
+              cp /work/input/slackware-15.0.config .config
               make olddefconfig
 
               CFG="./scripts/config"
@@ -169,9 +219,25 @@ jobs:
               "$CFG" --enable MODULES
               "$CFG" --enable MODULE_UNLOAD
 
+              # Evita dependências de toolchains opcionais do Slackware-current.
+              "$CFG" --disable DEBUG_INFO || true
+              "$CFG" --disable DEBUG_INFO_BTF || true
+              "$CFG" --disable DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT || true
+              "$CFG" --disable RUST || true
+              "$CFG" --disable LTO || true
+              "$CFG" --enable LTO_NONE || true
+
+              # Não depender de chaves de assinatura ausentes no ambiente CI.
+              "$CFG" --disable MODULE_SIG || true
               "$CFG" --disable MODULE_SIG_ALL || true
               "$CFG" --set-str SYSTEM_TRUSTED_KEYS ""
               "$CFG" --set-str SYSTEM_REVOCATION_KEYS ""
+
+              # Módulos sem compressão para máxima compatibilidade com kmod do 15.0.
+              "$CFG" --enable MODULE_COMPRESS_NONE || true
+              "$CFG" --disable MODULE_COMPRESS_GZIP || true
+              "$CFG" --disable MODULE_COMPRESS_XZ || true
+              "$CFG" --disable MODULE_COMPRESS_ZSTD || true
 
               "$CFG" --enable BLK_DEV_INITRD
               "$CFG" --enable DEVTMPFS
@@ -183,6 +249,7 @@ jobs:
               "$CFG" --enable EFIVAR_FS
               "$CFG" --enable EFI_PARTITION
 
+              # Stack de armazenamento do boot incorporada ao kernel.
               "$CFG" --enable SCSI
               "$CFG" --enable BLK_DEV_SD
               "$CFG" --enable ATA
@@ -192,12 +259,14 @@ jobs:
               "$CFG" --enable BLK_DEV_DM
               "$CFG" --enable DM_CRYPT
 
+              # Filesystems importantes incorporados ao kernel.
               "$CFG" --enable XFS_FS
               "$CFG" --enable BTRFS_FS
               "$CFG" --enable EXT4_FS
               "$CFG" --enable FAT_FS
               "$CFG" --enable VFAT_FS
 
+              # Hardware comum continua disponível.
               for OPT in \
                 USB_SUPPORT USB USB_XHCI_HCD USB_XHCI_PCI \
                 USB_EHCI_HCD USB_EHCI_PCI \
@@ -226,10 +295,11 @@ jobs:
               "
 
               for SYMBOL in $REQUIRED_Y; do
-                grep -q "^CONFIG_${SYMBOL}=y$" .config || {
+                if ! grep -q "^CONFIG_${SYMBOL}=y$" .config; then
                   echo "ERRO: CONFIG_${SYMBOL} não ficou =y"
+                  grep "^CONFIG_${SYMBOL}=" .config || true
                   exit 1
-                }
+                fi
               done
 
               RELEASE="$(make -s kernelrelease)"
@@ -237,11 +307,18 @@ jobs:
 
               cp .config "/work/output/config-${RELEASE}.final"
 
-              echo "=== Compilando com ${JOBS} jobs ==="
+              echo "========================================"
+              echo " COMPILANDO COM ${JOBS} JOBS"
+              echo "========================================"
+
               make -j"${JOBS}" bzImage modules
 
               test -s arch/x86/boot/bzImage
               test -s System.map
+
+              echo "========================================"
+              echo " MONTANDO PACOTE SLACKWARE"
+              echo "========================================"
 
               mkdir -p \
                 "$PKGROOT/boot" \
@@ -264,9 +341,9 @@ jobs:
               printf "%s\n" \
                 "Linux ${RELEASE}" \
                 "" \
-                "Pacote binário customizado para Slackware/Salix x86_64." \
-                "Kernel e módulos compilados dentro de Slackware 15.0." \
-                "TXZ criado com o makepkg nativo do Slackware." \
+                "Pacote customizado para Slackware/Salix x86_64." \
+                "Compilado e empacotado dentro de Slackware 15.0." \
+                "Criado pelo makepkg nativo do Slackware." \
                 "" \
                 "Conteúdo principal:" \
                 "  /boot/vmlinuz-${RELEASE}" \
@@ -274,8 +351,8 @@ jobs:
                 "  /boot/config-${RELEASE}" \
                 "  /lib/modules/${RELEASE}/" \
                 "" \
-                "XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in." \
-                "O pacote não remove kernels antigos nem altera o bootloader." \
+                "XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt ficam built-in." \
+                "O pacote preserva kernels anteriores e não altera o bootloader." \
                 > "$PKGROOT/usr/doc/kernel-generic-lts618-${RELEASE}/README"
 
               printf "%s\n" \
@@ -284,7 +361,7 @@ jobs:
                 "kernel-generic-lts618: Kernel Linux ${RELEASE} para Slackware/Salix x86_64." \
                 "kernel-generic-lts618: Compilado dentro de Slackware 15.0." \
                 "kernel-generic-lts618: Empacotado pelo makepkg nativo do Slackware." \
-                "kernel-generic-lts618: Inclui kernel e módulos correspondentes." \
+                "kernel-generic-lts618: Inclui o kernel e seus módulos correspondentes." \
                 "kernel-generic-lts618: XFS e Btrfs são incorporados ao kernel." \
                 "kernel-generic-lts618: SATA/AHCI, dm-crypt e device-mapper ficam built-in." \
                 "kernel-generic-lts618: Usa nomes versionados e preserva kernels anteriores." \
@@ -307,13 +384,17 @@ jobs:
                 "$PKGROOT/boot/System.map-${RELEASE}" \
                 "$PKGROOT/boot/config-${RELEASE}"
 
-              rm -f "/work/output/${PACKAGE_NAME}"
+              rm -f "/work/output/${PACKAGE_NAME}" "/work/output/${PACKAGE_NAME}.sha256"
 
-              echo "=== makepkg nativo do Slackware ==="
               cd "$PKGROOT"
+              echo "makepkg: $(command -v makepkg)"
               makepkg -l y -c n "/work/output/${PACKAGE_NAME}"
 
               test -s "/work/output/${PACKAGE_NAME}"
+
+              echo "========================================"
+              echo " VALIDANDO COM EXPLODEPKG"
+              echo "========================================"
 
               mkdir -p "$VERIFY"
               cd "$VERIFY"
@@ -332,23 +413,27 @@ jobs:
               cd /work/output
               sha256sum "${PACKAGE_NAME}" > "${PACKAGE_NAME}.sha256"
 
-              echo "=== PACOTE SLACKWARE VALIDADO ==="
+              echo "========================================"
+              echo " PACOTE SLACKWARE VALIDADO"
+              echo "========================================"
               ls -lh "${PACKAGE_NAME}" "${PACKAGE_NAME}.sha256"
               cat "${PACKAGE_NAME}.sha256"
-              echo "Módulos no pacote: ${MODULE_COUNT}"
+              echo "Módulos: ${MODULE_COUNT}"
             '
 
-      - name: Verificar artefatos no host
+      - name: Verificar artefatos no runner
         shell: bash
         run: |
           set -euxo pipefail
           test -s "output/$PACKAGE_NAME"
           test -s "output/$PACKAGE_NAME.sha256"
+          test -s "output/config-$KERNEL_VERSION.final"
           (
             cd output
             sha256sum -c "$PACKAGE_NAME.sha256"
           )
           ls -lh output/
+          df -h /
 
       - name: Upload do pacote
         uses: actions/upload-artifact@v4
@@ -382,7 +467,6 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package_name }}
         run: |
           set -euxo pipefail
-
           ls -lh release/
 
           if gh release view "$TAG" >/dev/null 2>&1; then
@@ -397,5 +481,5 @@ jobs:
               "release/$PACKAGE" \
               "release/$PACKAGE.sha256" \
               --title "Linux $VERSION para Slackware/Salix" \
-              --notes "Pacote TXZ x86_64 criado com makepkg dentro de Slackware 15.0. Inclui kernel e módulos. XFS e Btrfs são built-in. Instalação: sudo installpkg $PACKAGE"
+              --notes "Pacote TXZ x86_64 compilado e criado com makepkg dentro de Slackware 15.0. Inclui kernel e módulos. XFS e Btrfs são built-in. Instalação: sudo installpkg $PACKAGE"
           fi
