@@ -66,7 +66,29 @@ jobs:
           docker pull --platform linux/amd64 "$SLACKWARE_IMAGE"
           docker image inspect "$SLACKWARE_IMAGE" >/dev/null
           docker images "$SLACKWARE_IMAGE"
+          test -s /etc/ssl/certs/ca-certificates.crt
           df -h /
+
+      - name: Validar TLS dentro do Slackware 15.0
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # A imagem mínima do Slackware 15.0 ainda não possui o bundle CA.
+          # Para o bootstrap do slackpkg, montamos somente leitura o bundle
+          # confiável do runner GitHub e apontamos o OpenSSL/wget para ele.
+          docker run --rm \
+            --platform linux/amd64 \
+            --user 0:0 \
+            -e SSL_CERT_FILE=/bootstrap/ca-certificates.crt \
+            -v /etc/ssl/certs/ca-certificates.crt:/bootstrap/ca-certificates.crt:ro \
+            "$SLACKWARE_IMAGE" \
+            /bin/bash -lc '
+              set -e
+              test -s "$SSL_CERT_FILE"
+              wget -q --spider https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+              echo "TLS bootstrap OK"
+            '
 
       - name: Compilar kernel e criar pacote TXZ
         shell: bash
@@ -76,15 +98,17 @@ jobs:
           rm -rf output .kernel-build
           mkdir -p output .kernel-build
 
-          # O toolchain é instalado dentro do Slackware 15.0. A árvore pesada
-          # do kernel fica no bind mount /work/.kernel-build, e não na camada
-          # gravável do Docker.
+          # Todo o toolchain, build e makepkg rodam dentro do Slackware 15.0.
+          # O bundle CA do runner serve apenas para o bootstrap HTTPS da imagem
+          # mínima; ele é montado somente leitura e não entra no pacote final.
           docker run --rm \
             --platform linux/amd64 \
             --user 0:0 \
             -e JOBS="$JOBS" \
             -e WORKROOT=/work \
             -e BUILDROOT=/work/.kernel-build \
+            -e SSL_CERT_FILE=/bootstrap/ca-certificates.crt \
+            -v /etc/ssl/certs/ca-certificates.crt:/bootstrap/ca-certificates.crt:ro \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$SLACKWARE_IMAGE" \
