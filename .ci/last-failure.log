@@ -1,8 +1,8 @@
 GitHub Actions - último diagnóstico de falha
 ===========================================
-run_id=32384048881
+run_id=32412269511
 run_attempt=1
-commit=69cf97197fd698e50331b626d2a5c806a469c5bf
+commit=59eeda66d1e776b07a35ca3a2945e4c4ad21357a
 image=aclemons/slackware:15.0
 jobs=2
 
@@ -3006,7 +3006,7 @@ usr/src/linux-6.18.45/tools/objtool/weak.o
 An installation script was detected in ./install/doinst.sh, but
 was not executed.
 
-ERRO na linha 520 (status 1)
+ERRO na linha 538 (status 1)
 
 Filesystem      Size  Used Avail Use% Mounted on
 overlay         145G   53G   92G  37% /
