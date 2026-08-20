@@ -8,6 +8,7 @@ on:
     paths:
       - ".github/workflows/build-kernel.yml"
       - ".github/scripts/build-kernel-slackware.sh"
+      - ".github/scripts/build-kernel-headers-slackware.sh"
       - ".ci/LAST-SUCCESS.md"
 
 permissions:
@@ -23,7 +24,7 @@ env:
 
 jobs:
   sync_release_package:
-    name: Copiar TXZ validados para o repositório
+    name: Copiar três TXZ validados para o repositório
     if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[repo-package-only]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -47,23 +48,24 @@ jobs:
           PACKAGE_SHA256="$(sed -n 's/^- SHA-256 kernel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
           DEVEL_PACKAGE="$(sed -n 's/^- Pacote devel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
           DEVEL_SHA256="$(sed -n 's/^- SHA-256 devel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          HEADERS_PACKAGE="$(sed -n 's/^- Pacote headers: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          HEADERS_SHA256="$(sed -n 's/^- SHA-256 headers: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
           TAG="$(sed -n 's/^- Tag: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
 
-          test -n "$VERSION"
-          test -n "$PACKAGE"
-          test -n "$PACKAGE_SHA256"
-          test -n "$DEVEL_PACKAGE"
-          test -n "$DEVEL_SHA256"
-          test -n "$TAG"
+          for v in VERSION PACKAGE PACKAGE_SHA256 DEVEL_PACKAGE DEVEL_SHA256 HEADERS_PACKAGE HEADERS_SHA256 TAG; do
+            test -n "${!v}"
+          done
 
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
           echo "package_sha256=$PACKAGE_SHA256" >> "$GITHUB_OUTPUT"
           echo "devel_package=$DEVEL_PACKAGE" >> "$GITHUB_OUTPUT"
           echo "devel_sha256=$DEVEL_SHA256" >> "$GITHUB_OUTPUT"
+          echo "headers_package=$HEADERS_PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "headers_sha256=$HEADERS_SHA256" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
-      - name: Baixar pacotes publicados da Release
+      - name: Baixar três pacotes publicados da Release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -72,6 +74,8 @@ jobs:
           PACKAGE_SHA256: ${{ steps.meta.outputs.package_sha256 }}
           DEVEL_PACKAGE: ${{ steps.meta.outputs.devel_package }}
           DEVEL_SHA256: ${{ steps.meta.outputs.devel_sha256 }}
+          HEADERS_PACKAGE: ${{ steps.meta.outputs.headers_package }}
+          HEADERS_SHA256: ${{ steps.meta.outputs.headers_sha256 }}
         run: |
           set -euxo pipefail
           rm -rf repo-package-download
@@ -79,23 +83,24 @@ jobs:
 
           for asset in \
             "$PACKAGE" "$PACKAGE.sha256" \
-            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256"; do
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
             gh release download "$TAG" --pattern "$asset" --dir repo-package-download
             test -s "repo-package-download/$asset"
           done
 
-          ACTUAL_KERNEL_SHA="$(sha256sum "repo-package-download/$PACKAGE" | awk '{print $1}')"
-          ACTUAL_DEVEL_SHA="$(sha256sum "repo-package-download/$DEVEL_PACKAGE" | awk '{print $1}')"
-          test "$ACTUAL_KERNEL_SHA" = "$PACKAGE_SHA256"
-          test "$ACTUAL_DEVEL_SHA" = "$DEVEL_SHA256"
+          test "$(sha256sum "repo-package-download/$PACKAGE" | awk '{print $1}')" = "$PACKAGE_SHA256"
+          test "$(sha256sum "repo-package-download/$DEVEL_PACKAGE" | awk '{print $1}')" = "$DEVEL_SHA256"
+          test "$(sha256sum "repo-package-download/$HEADERS_PACKAGE" | awk '{print $1}')" = "$HEADERS_SHA256"
 
           (
             cd repo-package-download
             sha256sum -c "$PACKAGE.sha256"
             sha256sum -c "$DEVEL_PACKAGE.sha256"
+            sha256sum -c "$HEADERS_PACKAGE.sha256"
           )
 
-      - name: Commitar TXZ dentro da branch main
+      - name: Commitar três TXZ dentro da branch main
         shell: bash
         env:
           VERSION: ${{ steps.meta.outputs.version }}
@@ -104,6 +109,8 @@ jobs:
           PACKAGE_SHA256: ${{ steps.meta.outputs.package_sha256 }}
           DEVEL_PACKAGE: ${{ steps.meta.outputs.devel_package }}
           DEVEL_SHA256: ${{ steps.meta.outputs.devel_sha256 }}
+          HEADERS_PACKAGE: ${{ steps.meta.outputs.headers_package }}
+          HEADERS_SHA256: ${{ steps.meta.outputs.headers_sha256 }}
         run: |
           set -euxo pipefail
 
@@ -112,21 +119,24 @@ jobs:
           git pull --ff-only origin main
 
           mkdir -p packages .ci
-          cp -f "repo-package-download/$PACKAGE" "packages/$PACKAGE"
-          cp -f "repo-package-download/$PACKAGE.sha256" "packages/$PACKAGE.sha256"
-          cp -f "repo-package-download/$DEVEL_PACKAGE" "packages/$DEVEL_PACKAGE"
-          cp -f "repo-package-download/$DEVEL_PACKAGE.sha256" "packages/$DEVEL_PACKAGE.sha256"
+          for asset in \
+            "$PACKAGE" "$PACKAGE.sha256" \
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
+            cp -f "repo-package-download/$asset" "packages/$asset"
+          done
 
           test "$(sha256sum "packages/$PACKAGE" | awk '{print $1}')" = "$PACKAGE_SHA256"
           test "$(sha256sum "packages/$DEVEL_PACKAGE" | awk '{print $1}')" = "$DEVEL_SHA256"
+          test "$(sha256sum "packages/$HEADERS_PACKAGE" | awk '{print $1}')" = "$HEADERS_SHA256"
 
           KERNEL_SIZE="$(stat -c '%s' "packages/$PACKAGE")"
           DEVEL_SIZE="$(stat -c '%s' "packages/$DEVEL_PACKAGE")"
-          echo "Tamanho kernel TXZ: $KERNEL_SIZE bytes"
-          echo "Tamanho devel TXZ: $DEVEL_SIZE bytes"
+          HEADERS_SIZE="$(stat -c '%s' "packages/$HEADERS_PACKAGE")"
 
           test "$KERNEL_SIZE" -lt 100000000
           test "$DEVEL_SIZE" -lt 100000000
+          test "$HEADERS_SIZE" -lt 100000000
 
           cat > .ci/PACKAGE-IN-REPO.md <<EOF_PACKAGE
           # Pacotes TXZ armazenados no repositório
@@ -136,28 +146,32 @@ jobs:
           - SHA-256 kernel: $PACKAGE_SHA256
           - Pacote devel: packages/$DEVEL_PACKAGE
           - SHA-256 devel: $DEVEL_SHA256
+          - Pacote headers: packages/$HEADERS_PACKAGE
+          - SHA-256 headers: $HEADERS_SHA256
           - Release de origem: $TAG
           - Workflow run: $GITHUB_RUN_ID
-          - Estado: pacotes validados e commitados na branch main
+          - Estado: três pacotes validados e commitados na branch main
           EOF_PACKAGE
 
           git add \
             "packages/$PACKAGE" "packages/$PACKAGE.sha256" \
             "packages/$DEVEL_PACKAGE" "packages/$DEVEL_PACKAGE.sha256" \
+            "packages/$HEADERS_PACKAGE" "packages/$HEADERS_PACKAGE.sha256" \
             .ci/PACKAGE-IN-REPO.md
 
           if git diff --cached --quiet; then
-            echo "Pacotes já estão presentes e idênticos no repositório."
+            echo "Os três pacotes já estão presentes e idênticos no repositório."
           else
-            git commit -m "Adiciona TXZ kernel e kernel-devel ao repositório"
+            git commit -m "Adiciona TXZ kernel, devel e headers ao repositório"
             git push origin HEAD:main
           fi
 
-          SIZE_KERNEL_REMOTE="$(gh api "repos/$GITHUB_REPOSITORY/contents/packages/$PACKAGE?ref=main" --jq '.size')"
-          SIZE_DEVEL_REMOTE="$(gh api "repos/$GITHUB_REPOSITORY/contents/packages/$DEVEL_PACKAGE?ref=main" --jq '.size')"
-          test "$KERNEL_SIZE" = "$SIZE_KERNEL_REMOTE"
-          test "$DEVEL_SIZE" = "$SIZE_DEVEL_REMOTE"
-          echo "Pacotes confirmados na branch main."
+          for asset in "$PACKAGE" "$DEVEL_PACKAGE" "$HEADERS_PACKAGE"; do
+            SIZE_LOCAL="$(stat -c '%s' "packages/$asset")"
+            SIZE_REMOTE="$(gh api "repos/$GITHUB_REPOSITORY/contents/packages/$asset?ref=main" --jq '.size')"
+            test "$SIZE_LOCAL" = "$SIZE_REMOTE"
+          done
+          echo "Três pacotes confirmados na branch main."
 
   build:
     name: Compilar e empacotar no Slackware 15.0
@@ -169,6 +183,7 @@ jobs:
       kernel_version: ${{ steps.meta.outputs.kernel_version }}
       package_name: ${{ steps.meta.outputs.package_name }}
       devel_package_name: ${{ steps.meta.outputs.devel_package_name }}
+      headers_package_name: ${{ steps.meta.outputs.headers_package_name }}
       release_tag: ${{ steps.meta.outputs.release_tag }}
 
     steps:
@@ -176,7 +191,6 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          echo "=== Antes da limpeza ==="
           df -h /
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
@@ -184,7 +198,6 @@ jobs:
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean
           docker system prune -af --volumes || true
-          echo "=== Depois da limpeza ==="
           df -h /
 
       - name: Checkout
@@ -217,12 +230,14 @@ jobs:
             git push origin HEAD:main
           fi
 
-      - name: Validar script de build
+      - name: Validar scripts de build
         shell: bash
         run: |
           set -euxo pipefail
           bash -n .github/scripts/build-kernel-slackware.sh
+          bash -n .github/scripts/build-kernel-headers-slackware.sh
           chmod +x .github/scripts/build-kernel-slackware.sh
+          chmod +x .github/scripts/build-kernel-headers-slackware.sh
 
       - name: Baixar imagem base Slackware 15.0
         shell: bash
@@ -252,7 +267,7 @@ jobs:
               echo "Bootstrap TLS OK"
             '
 
-      - name: Compilar kernel e criar pacotes TXZ
+      - name: Compilar kernel e criar kernel + kernel-devel
         shell: bash
         run: |
           set -euxo pipefail
@@ -272,6 +287,20 @@ jobs:
             "$SLACKWARE_IMAGE" \
             /bin/bash /work/.github/scripts/build-kernel-slackware.sh
 
+      - name: Criar kernel-headers TXZ no mesmo Slackware 15.0
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker run --rm \
+            --platform linux/amd64 \
+            --user 0:0 \
+            -e WORKROOT=/work \
+            -e BUILDROOT=/work/.kernel-build \
+            -v "$GITHUB_WORKSPACE:/work" \
+            -w /work \
+            "$SLACKWARE_IMAGE" \
+            /bin/bash /work/.github/scripts/build-kernel-headers-slackware.sh
+
       - name: Registrar diagnóstico da falha de build
         if: failure()
         shell: bash
@@ -287,15 +316,11 @@ jobs:
             echo "image=$SLACKWARE_IMAGE"
             echo "jobs=$JOBS"
             echo
-            echo "Espaço em disco:"
             df -h /
             echo
-            echo "Uso da árvore de build:"
             du -sh .kernel-build 2>/dev/null || true
             echo
             if [ -s output/build.log ]; then
-              echo "Últimas 3000 linhas de output/build.log:"
-              echo "-----------------------------------------"
               tail -n 3000 output/build.log
             else
               echo "output/build.log não foi criado."
@@ -324,20 +349,20 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Ler metadados dos pacotes
+      - name: Ler metadados dos três pacotes
         id: meta
         shell: bash
         run: |
           set -euxo pipefail
           test -s output/meta.env
           source output/meta.env
-          test -n "$KERNEL_VERSION"
-          test -n "$PACKAGE_NAME"
-          test -n "$DEVEL_PACKAGE_NAME"
-          test -n "$RELEASE_TAG"
+          for v in KERNEL_VERSION PACKAGE_NAME DEVEL_PACKAGE_NAME HEADERS_PACKAGE_NAME RELEASE_TAG; do
+            test -n "${!v}"
+          done
           echo "kernel_version=$KERNEL_VERSION" >> "$GITHUB_OUTPUT"
           echo "package_name=$PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "devel_package_name=$DEVEL_PACKAGE_NAME" >> "$GITHUB_OUTPUT"
+          echo "headers_package_name=$HEADERS_PACKAGE_NAME" >> "$GITHUB_OUTPUT"
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           cat output/meta.env
 
@@ -349,6 +374,7 @@ jobs:
           for f in \
             "$PACKAGE_NAME" "$PACKAGE_NAME.sha256" \
             "$DEVEL_PACKAGE_NAME" "$DEVEL_PACKAGE_NAME.sha256" \
+            "$HEADERS_PACKAGE_NAME" "$HEADERS_PACKAGE_NAME.sha256" \
             "config-$KERNEL_VERSION.final"; do
             test -s "output/$f"
           done
@@ -356,11 +382,12 @@ jobs:
             cd output
             sha256sum -c "$PACKAGE_NAME.sha256"
             sha256sum -c "$DEVEL_PACKAGE_NAME.sha256"
+            sha256sum -c "$HEADERS_PACKAGE_NAME.sha256"
           )
           ls -lh output/
           df -h /
 
-      - name: Upload dos pacotes para Actions
+      - name: Upload dos três pacotes para Actions
         uses: actions/upload-artifact@v4
         with:
           name: kernel-slackware-${{ steps.meta.outputs.kernel_version }}
@@ -369,6 +396,8 @@ jobs:
             output/${{ steps.meta.outputs.package_name }}.sha256
             output/${{ steps.meta.outputs.devel_package_name }}
             output/${{ steps.meta.outputs.devel_package_name }}.sha256
+            output/${{ steps.meta.outputs.headers_package_name }}
+            output/${{ steps.meta.outputs.headers_package_name }}.sha256
             output/config-${{ steps.meta.outputs.kernel_version }}.final
             output/build.log
           compression-level: 0
@@ -376,7 +405,7 @@ jobs:
           retention-days: 14
 
   publish:
-    name: Publicar e verificar TXZ
+    name: Publicar e verificar três TXZ
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -394,20 +423,25 @@ jobs:
           name: kernel-slackware-${{ needs.build.outputs.kernel_version }}
           path: release
 
-      - name: Verificar pacotes antes da publicação
+      - name: Verificar três pacotes antes da publicação
         shell: bash
         env:
           PACKAGE: ${{ needs.build.outputs.package_name }}
           DEVEL_PACKAGE: ${{ needs.build.outputs.devel_package_name }}
+          HEADERS_PACKAGE: ${{ needs.build.outputs.headers_package_name }}
         run: |
           set -euxo pipefail
-          for f in "$PACKAGE" "$PACKAGE.sha256" "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256"; do
+          for f in \
+            "$PACKAGE" "$PACKAGE.sha256" \
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
             test -s "release/$f"
           done
           (
             cd release
             sha256sum -c "$PACKAGE.sha256"
             sha256sum -c "$DEVEL_PACKAGE.sha256"
+            sha256sum -c "$HEADERS_PACKAGE.sha256"
           )
           ls -lh release/
 
@@ -420,28 +454,26 @@ jobs:
           VERSION: ${{ needs.build.outputs.kernel_version }}
           PACKAGE: ${{ needs.build.outputs.package_name }}
           DEVEL_PACKAGE: ${{ needs.build.outputs.devel_package_name }}
+          HEADERS_PACKAGE: ${{ needs.build.outputs.headers_package_name }}
         run: |
           set -euxo pipefail
           exec > >(tee -a release/publish.log) 2>&1
 
+          ASSETS=(
+            "release/$PACKAGE" "release/$PACKAGE.sha256"
+            "release/$DEVEL_PACKAGE" "release/$DEVEL_PACKAGE.sha256"
+            "release/$HEADERS_PACKAGE" "release/$HEADERS_PACKAGE.sha256"
+          )
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload \
-              "$TAG" \
-              "release/$PACKAGE" \
-              "release/$PACKAGE.sha256" \
-              "release/$DEVEL_PACKAGE" \
-              "release/$DEVEL_PACKAGE.sha256" \
-              --clobber
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
           else
             gh release create \
               "$TAG" \
-              "release/$PACKAGE" \
-              "release/$PACKAGE.sha256" \
-              "release/$DEVEL_PACKAGE" \
-              "release/$DEVEL_PACKAGE.sha256" \
+              "${ASSETS[@]}" \
               --target "$GITHUB_SHA" \
               --title "Linux $VERSION para Slackware/Salix" \
-              --notes "Pacotes Slackware TXZ x86_64 compilados e empacotados dentro de Slackware 15.0 com makepkg nativo. O pacote kernel inclui amplo suporte USB host e rtw88_8821cu para 0bda:c820. O pacote kernel-devel fornece a árvore preparada para módulos externos e foi validado compilando um módulo de teste."
+              --notes "Entrega nativa Slackware com três TXZ: kernel, kernel-devel e kernel-headers. Todos são produzidos dentro de Slackware 15.0 com makepkg. O kernel inclui suporte USB ampliado e rtw88_8821cu para 0bda:c820. O kernel-devel é validado compilando módulo externo. O kernel-headers é gerado com make headers_install e fornece UAPI headers em /usr/include."
           fi
 
           RELEASE_URL="$(gh release view "$TAG" --json url --jq .url)"
@@ -449,13 +481,14 @@ jobs:
           echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
           echo "Release: $RELEASE_URL"
 
-      - name: Confirmar pacotes publicados e checksums remotos
+      - name: Confirmar três pacotes publicados e checksums remotos
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.build.outputs.release_tag }}
           PACKAGE: ${{ needs.build.outputs.package_name }}
           DEVEL_PACKAGE: ${{ needs.build.outputs.devel_package_name }}
+          HEADERS_PACKAGE: ${{ needs.build.outputs.headers_package_name }}
         run: |
           set -euxo pipefail
           gh release view "$TAG" \
@@ -463,13 +496,19 @@ jobs:
             > release/release.json
 
           jq -e '.isDraft == false and .isPrerelease == false' release/release.json
-          for asset in "$PACKAGE" "$PACKAGE.sha256" "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256"; do
+          for asset in \
+            "$PACKAGE" "$PACKAGE.sha256" \
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
             jq -e --arg p "$asset" '.assets | map(.name) | index($p) != null' release/release.json
           done
 
           rm -rf release-verify
           mkdir -p release-verify
-          for asset in "$PACKAGE" "$PACKAGE.sha256" "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256"; do
+          for asset in \
+            "$PACKAGE" "$PACKAGE.sha256" \
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
             gh release download "$TAG" --pattern "$asset" --dir release-verify
           done
 
@@ -477,10 +516,12 @@ jobs:
             cd release-verify
             sha256sum -c "$PACKAGE.sha256"
             sha256sum -c "$DEVEL_PACKAGE.sha256"
+            sha256sum -c "$HEADERS_PACKAGE.sha256"
           )
           cmp -s "release/$PACKAGE" "release-verify/$PACKAGE"
           cmp -s "release/$DEVEL_PACKAGE" "release-verify/$DEVEL_PACKAGE"
-          echo "Pacotes remotos confirmados byte a byte."
+          cmp -s "release/$HEADERS_PACKAGE" "release-verify/$HEADERS_PACKAGE"
+          echo "Três pacotes remotos confirmados byte a byte."
 
       - name: Registrar entrega concluída no repositório
         shell: bash
@@ -489,12 +530,15 @@ jobs:
           VERSION: ${{ needs.build.outputs.kernel_version }}
           PACKAGE: ${{ needs.build.outputs.package_name }}
           DEVEL_PACKAGE: ${{ needs.build.outputs.devel_package_name }}
+          HEADERS_PACKAGE: ${{ needs.build.outputs.headers_package_name }}
           RELEASE_URL: ${{ steps.release.outputs.release_url }}
         run: |
           set -euxo pipefail
           mkdir -p .ci
           PACKAGE_SHA256="$(awk '{print $1}' "release/$PACKAGE.sha256")"
           DEVEL_SHA256="$(awk '{print $1}' "release/$DEVEL_PACKAGE.sha256")"
+          HEADERS_SHA256="$(awk '{print $1}' "release/$HEADERS_PACKAGE.sha256")"
+
           cat > .ci/LAST-SUCCESS.md <<EOF_SUCCESS
           # Última entrega TXZ concluída
 
@@ -503,14 +547,17 @@ jobs:
           - SHA-256 kernel: $PACKAGE_SHA256
           - Pacote devel: $DEVEL_PACKAGE
           - SHA-256 devel: $DEVEL_SHA256
+          - Pacote headers: $HEADERS_PACKAGE
+          - SHA-256 headers: $HEADERS_SHA256
           - Tag: $TAG
           - Release: $RELEASE_URL
           - Workflow run: $GITHUB_RUN_ID
           - Commit do workflow: $GITHUB_SHA
           - Ambiente de build: Slackware 15.0
-          - Empacotamento: makepkg nativo do Slackware
+          - Empacotamento: makepkg nativo do Slackware para os três pacotes
           - Validação kernel: installpkg --warn, explodepkg, módulos RTL8821CU e alias USB 0bda:c820
           - Validação devel: installpkg --warn, explodepkg e compilação de módulo externo com vermagic correspondente
+          - Validação headers: make headers_install, installpkg --warn, explodepkg e compilação userspace de teste
           - Validação remota: SHA-256 e download da Release comparado byte a byte
 
           Instalação no Slackware/Salix:
@@ -518,6 +565,7 @@ jobs:
           \`\`\`bash
           sudo installpkg $PACKAGE
           sudo installpkg $DEVEL_PACKAGE
+          sudo upgradepkg --install-new $HEADERS_PACKAGE
           \`\`\`
           EOF_SUCCESS
 
@@ -525,7 +573,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .ci/LAST-SUCCESS.md
           if ! git diff --cached --quiet; then
-            git commit -m "[repo-package-only] CI: registra entrega TXZ concluída"
+            git commit -m "[repo-package-only] CI: registra entrega dos três TXZ"
             git pull --rebase origin main
             git push origin HEAD:main
           fi
@@ -543,6 +591,7 @@ jobs:
             echo "commit=$GITHUB_SHA"
             echo "package=${{ needs.build.outputs.package_name }}"
             echo "devel_package=${{ needs.build.outputs.devel_package_name }}"
+            echo "headers_package=${{ needs.build.outputs.headers_package_name }}"
             echo "tag=${{ needs.build.outputs.release_tag }}"
             echo
             if [ -s release/publish.log ]; then
@@ -557,7 +606,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .ci/last-publish-failure.log
           if ! git diff --cached --quiet; then
-            git commit -m "CI: registra falha na publicação dos TXZ"
+            git commit -m "CI: registra falha na publicação dos três TXZ"
             git pull --rebase origin main || true
             git push origin HEAD:main || true
           fi
