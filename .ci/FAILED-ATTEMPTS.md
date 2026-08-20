@@ -37,6 +37,12 @@ Antes de alterar `.github/workflows/build-kernel.yml` ou `.github/scripts/build-
    - O wrapper não deve interpretar status 20 como sucesso quando o objetivo é instalar uma série obrigatória: é necessário confirmar que o branch/série realmente resolveu pacotes e que o toolchain esperado foi instalado.
    - A instalação das séries deve usar uma seleção explícita baseada na localização oficial dos pacotes ou outro mecanismo verificável do próprio Slackware, e deve falhar se a seleção resultar vazia.
 
+8. **Tratar qualquer status diferente de zero do `explodepkg` como falha antes de verificar o conteúdo extraído.**
+   - Na execução `32384048881`, `makepkg` criou com sucesso `kernel-generic-lts618-6.18.45-x86_64-2.txz` e `kernel-devel-lts618-6.18.45-x86_64-2.txz`.
+   - A validação do `kernel-devel` extraiu todo o pacote, detectou `install/doinst.sh` e então terminou com status 1, fazendo `set -e` abortar o script antes dos testes de conteúdo e antes de gerar `kernel-headers`.
+   - O log terminou com `An installation script was detected in ./install/doinst.sh, but was not executed.` e `ERRO na linha 520 (status 1)`; havia aproximadamente 92 GB livres.
+   - Aprendizado: a validação deve capturar explicitamente o retorno do `explodepkg`, aceitar somente o caso conhecido em que a árvore foi efetivamente extraída e contém `install/doinst.sh`, e depois validar os arquivos esperados. Qualquer outro retorno não zero continua sendo erro.
+
 ## Falha concreta registrada em 2026-08-19
 
 Execução baseada no commit `4b67f52c2edeb0292a33a54e4c119c118d835ede` falhou antes da compilação do kernel.
@@ -98,6 +104,28 @@ Havia aproximadamente 98 GB livres. Portanto, esta falha não é de espaço, TLS
 
 Aprendizado: não aceitar `20` indiscriminadamente como sucesso no bootstrap. Para uma série obrigatória, uma seleção vazia deve ser erro. A correção deve montar uma lista verificável de pacotes pertencentes a `slackware64/<série>` e instalar essa lista, preservando o mecanismo oficial de verificação do Slackware.
 
+## Falha concreta registrada em 2026-08-20 — run 32384048881
+
+A execução baseada no commit `69cf97197fd698e50331b626d2a5c806a469c5bf` concluiu a compilação do kernel e criou com o `makepkg` nativo do Slackware os pacotes principal e `kernel-devel` da revisão 2. O pacote `kernel-devel` foi criado e o `explodepkg` iniciou sua extração normalmente.
+
+Causa confirmada pelo artifact `kernel-build-failure-log`:
+
+```text
+Slackware package /work/output/kernel-devel-lts618-6.18.45-x86_64-2.txz created.
+
+==== Validando TXZ kernel-devel e compilando módulo externo mínimo ====
+Exploding package /work/output/kernel-devel-lts618-6.18.45-x86_64-2.txz in current directory:
+...
+An installation script was detected in ./install/doinst.sh, but
+was not executed.
+
+ERRO na linha 520 (status 1)
+```
+
+O `df` registrado no mesmo log mostrava aproximadamente 92 GB livres. Portanto, a compilação e o `makepkg` não são a causa desta falha; o abortamento ocorreu no passo de validação por causa do retorno não zero de `explodepkg` sob `set -e` depois que o conteúdo já havia sido extraído.
+
+Aprendizado: encapsular a extração de validação. Um retorno 1 só pode ser tolerado quando a extração produziu a árvore esperada e `install/doinst.sh` está presente; em seguida os testes estruturais continuam obrigatórios. Outros retornos, ou ausência da árvore esperada, devem falhar.
+
 ## Direção atual aceita
 
 - Runner GitHub Ubuntu apenas como host/orquestrador.
@@ -107,7 +135,7 @@ Aprendizado: não aceitar `20` indiscriminadamente como sucesso no bootstrap. Pa
 - Toolchain instalado e usado dentro do Slackware.
 - Kernel compilado dentro do Slackware.
 - `.txz` criado com `makepkg` nativo do Slackware.
-- Pacote validado com `explodepkg` dentro do Slackware.
+- Pacote validado com `explodepkg` dentro do Slackware, tratando explicitamente o caso conhecido de retorno 1 após detectar `install/doinst.sh` e exigindo validação estrutural subsequente.
 - Não substituir nem remover automaticamente o kernel antigo.
 - Não alterar automaticamente o bootloader durante a instalação inicial do pacote.
 
