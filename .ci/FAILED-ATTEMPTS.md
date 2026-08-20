@@ -32,6 +32,11 @@ Antes de alterar `.github/workflows/build-kernel.yml` ou `.github/scripts/build-
    - Toda nova correção deve partir do log concreto da última falha.
    - `.ci/last-failure.log` e os artifacts do Actions devem ser usados como fonte de diagnóstico.
 
+7. **Tratar `slackpkg install a` como forma garantida de instalar a série `a` no container mínimo.**
+   - Na execução `32378454480`, o `slackpkg` respondeu `No packages match the pattern for install` e retornou status 20.
+   - O wrapper não deve interpretar status 20 como sucesso quando o objetivo é instalar uma série obrigatória: é necessário confirmar que o branch/série realmente resolveu pacotes e que o toolchain esperado foi instalado.
+   - A instalação das séries deve usar uma seleção explícita baseada na localização oficial dos pacotes ou outro mecanismo verificável do próprio Slackware, e deve falhar se a seleção resultar vazia.
+
 ## Falha concreta registrada em 2026-08-19
 
 Execução baseada no commit `4b67f52c2edeb0292a33a54e4c119c118d835ede` falhou antes da compilação do kernel.
@@ -70,6 +75,28 @@ ERRO na linha 32 (status 1)
 O mesmo log registra diversos `Connection timed out` ao acessar `mirrors.kernel.org` e tentativas IPv6 com `Network is unreachable`. Havia aproximadamente 98 GB livres, portanto não foi falta de disco.
 
 Aprendizado: uma instalação longa de séries completas via `slackpkg` não pode depender de uma única passagem de rede. Quando `slackpkg` retornar erro por downloads/checksums transitórios, a correção deve preservar os pacotes já instalados, limpar o cache parcial e repetir apenas a operação da série corrente, com número limitado de tentativas. Não desabilitar verificação de checksum/certificado para mascarar a falha.
+
+## Falha concreta registrada em 2026-08-20 — run 32378454480
+
+A execução baseada no commit `bfccc029244f038a1670c97abdd98fc9e7e4287f` passou pelo bootstrap TLS e atualizou corretamente os metadados do `slackpkg`, mas parou antes da compilação ao iniciar a série `a`.
+
+Causa confirmada em `.ci/last-failure.log`:
+
+```text
+==== Instalando série Slackware: a ====
+
+Looking for a in package list. Please wait... DONE
+
+No packages match the pattern for install. Try:
+
+    /usr/sbin/slackpkg reinstall|upgrade
+
+ERRO na linha 32 (status 20)
+```
+
+Havia aproximadamente 98 GB livres. Portanto, esta falha não é de espaço, TLS, checksum ou compilação: é de seleção do conjunto de pacotes.
+
+Aprendizado: não aceitar `20` indiscriminadamente como sucesso no bootstrap. Para uma série obrigatória, uma seleção vazia deve ser erro. A correção deve montar uma lista verificável de pacotes pertencentes a `slackware64/<série>` e instalar essa lista, preservando o mecanismo oficial de verificação do Slackware.
 
 ## Direção atual aceita
 
