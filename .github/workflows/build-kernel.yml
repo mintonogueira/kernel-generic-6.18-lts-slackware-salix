@@ -9,6 +9,7 @@ on:
       - ".github/workflows/build-kernel.yml"
       - ".github/scripts/build-kernel-slackware.sh"
       - ".github/scripts/build-kernel-headers-slackware.sh"
+      - ".github/scripts/build-all-packages-slackware.sh"
       - ".ci/LAST-SUCCESS.md"
 
 permissions:
@@ -236,8 +237,10 @@ jobs:
           set -euxo pipefail
           bash -n .github/scripts/build-kernel-slackware.sh
           bash -n .github/scripts/build-kernel-headers-slackware.sh
+          bash -n .github/scripts/build-all-packages-slackware.sh
           chmod +x .github/scripts/build-kernel-slackware.sh
           chmod +x .github/scripts/build-kernel-headers-slackware.sh
+          chmod +x .github/scripts/build-all-packages-slackware.sh
 
       - name: Baixar imagem base Slackware 15.0
         shell: bash
@@ -267,7 +270,7 @@ jobs:
               echo "Bootstrap TLS OK"
             '
 
-      - name: Compilar kernel e criar kernel + kernel-devel
+      - name: Compilar e criar os três pacotes TXZ no mesmo Slackware 15.0
         shell: bash
         run: |
           set -euxo pipefail
@@ -285,21 +288,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$SLACKWARE_IMAGE" \
-            /bin/bash /work/.github/scripts/build-kernel-slackware.sh
-
-      - name: Criar kernel-headers TXZ no mesmo Slackware 15.0
-        shell: bash
-        run: |
-          set -euxo pipefail
-          docker run --rm \
-            --platform linux/amd64 \
-            --user 0:0 \
-            -e WORKROOT=/work \
-            -e BUILDROOT=/work/.kernel-build \
-            -v "$GITHUB_WORKSPACE:/work" \
-            -w /work \
-            "$SLACKWARE_IMAGE" \
-            /bin/bash /work/.github/scripts/build-kernel-headers-slackware.sh
+            /bin/bash /work/.github/scripts/build-all-packages-slackware.sh
 
       - name: Registrar diagnóstico da falha de build
         if: failure()
