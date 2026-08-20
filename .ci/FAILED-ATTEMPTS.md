@@ -51,6 +51,26 @@ update-ca-certificates: command not found
 
 O runner tinha aproximadamente 106 GB livres; portanto essa execução não falhou por falta de espaço.
 
+## Falha concreta registrada em 2026-08-20 — run 32340594409
+
+A execução baseada no commit `8ce5950dad1559c8ebb8e05b812d829259ebffc6` passou pelo bootstrap TLS e pelas séries `a`, `ap` e `d`, mas falhou durante a instalação da série `l`, antes da compilação do kernel.
+
+Causa confirmada pelo artifact `kernel-build-failure-log`:
+
+```text
+One or more errors occurred while slackpkg was running:
+...
+libiodbc-3.52.15-x86_64-1.txz: md5sum
+libpcap-1.10.6-x86_64-1_slack15.0.txz: md5sum
+libxml2-2.11.9-x86_64-9_slack15.0.txz.asc: md5sum
+...
+ERRO na linha 32 (status 1)
+```
+
+O mesmo log registra diversos `Connection timed out` ao acessar `mirrors.kernel.org` e tentativas IPv6 com `Network is unreachable`. Havia aproximadamente 98 GB livres, portanto não foi falta de disco.
+
+Aprendizado: uma instalação longa de séries completas via `slackpkg` não pode depender de uma única passagem de rede. Quando `slackpkg` retornar erro por downloads/checksums transitórios, a correção deve preservar os pacotes já instalados, limpar o cache parcial e repetir apenas a operação da série corrente, com número limitado de tentativas. Não desabilitar verificação de checksum/certificado para mascarar a falha.
+
 ## Direção atual aceita
 
 - Runner GitHub Ubuntu apenas como host/orquestrador.
