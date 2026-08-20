@@ -21,8 +21,117 @@ env:
   SLACKWARE_IMAGE: "aclemons/slackware:15.0"
 
 jobs:
+  sync_release_package:
+    name: Copiar TXZ validado para o repositório
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, '[repo-package-only]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout da branch main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Ler última entrega validada
+        id: meta
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s .ci/LAST-SUCCESS.md
+
+          VERSION="$(sed -n 's/^- Kernel: //p' .ci/LAST-SUCCESS.md | head -n1)"
+          PACKAGE="$(sed -n 's/^- Pacote: //p' .ci/LAST-SUCCESS.md | head -n1)"
+          SHA256="$(sed -n 's/^- SHA-256: //p' .ci/LAST-SUCCESS.md | head -n1)"
+          TAG="$(sed -n 's/^- Tag: //p' .ci/LAST-SUCCESS.md | head -n1)"
+
+          test -n "$VERSION"
+          test -n "$PACKAGE"
+          test -n "$SHA256"
+          test -n "$TAG"
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Baixar pacote publicado da Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PACKAGE: ${{ steps.meta.outputs.package }}
+          EXPECTED_SHA256: ${{ steps.meta.outputs.sha256 }}
+        run: |
+          set -euxo pipefail
+          rm -rf repo-package-download
+          mkdir -p repo-package-download
+
+          gh release download "$TAG" --pattern "$PACKAGE" --dir repo-package-download
+          gh release download "$TAG" --pattern "$PACKAGE.sha256" --dir repo-package-download
+
+          test -s "repo-package-download/$PACKAGE"
+          test -s "repo-package-download/$PACKAGE.sha256"
+
+          ACTUAL_SHA256="$(sha256sum "repo-package-download/$PACKAGE" | awk '{print $1}')"
+          test "$ACTUAL_SHA256" = "$EXPECTED_SHA256"
+
+          (
+            cd repo-package-download
+            sha256sum -c "$PACKAGE.sha256"
+          )
+
+      - name: Commitar TXZ dentro da branch main
+        shell: bash
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PACKAGE: ${{ steps.meta.outputs.package }}
+          SHA256: ${{ steps.meta.outputs.sha256 }}
+        run: |
+          set -euxo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --ff-only origin main
+
+          mkdir -p packages .ci
+          cp -f "repo-package-download/$PACKAGE" "packages/$PACKAGE"
+          cp -f "repo-package-download/$PACKAGE.sha256" "packages/$PACKAGE.sha256"
+
+          test -s "packages/$PACKAGE"
+          ACTUAL_SHA256="$(sha256sum "packages/$PACKAGE" | awk '{print $1}')"
+          test "$ACTUAL_SHA256" = "$SHA256"
+
+          cat > .ci/PACKAGE-IN-REPO.md <<EOF_PACKAGE
+          # Pacote TXZ armazenado no repositório
+
+          - Kernel: $VERSION
+          - Pacote: packages/$PACKAGE
+          - SHA-256: $SHA256
+          - Release de origem: $TAG
+          - Workflow run: $GITHUB_RUN_ID
+          - Estado: pacote validado e commitado na branch main
+          EOF_PACKAGE
+
+          git add "packages/$PACKAGE" "packages/$PACKAGE.sha256" .ci/PACKAGE-IN-REPO.md
+
+          if git diff --cached --quiet; then
+            echo "Pacote já está presente e idêntico no repositório."
+          else
+            git commit -m "Adiciona pacote TXZ $PACKAGE ao repositório"
+            git push origin HEAD:main
+          fi
+
+          SIZE_LOCAL="$(stat -c '%s' "packages/$PACKAGE")"
+          SIZE_REMOTE="$(gh api "repos/$GITHUB_REPOSITORY/contents/packages/$PACKAGE?ref=main" --jq '.size')"
+          test "$SIZE_LOCAL" = "$SIZE_REMOTE"
+          echo "Pacote confirmado na branch main: packages/$PACKAGE"
+
   build:
     name: Compilar e empacotar no Slackware 15.0
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, '[repo-package-only]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 360
 
