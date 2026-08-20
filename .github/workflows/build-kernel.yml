@@ -38,14 +38,12 @@ jobs:
           set -euxo pipefail
           echo "=== Antes da limpeza ==="
           df -h /
-
           sudo rm -rf /usr/local/lib/android || true
           sudo rm -rf /usr/share/dotnet || true
           sudo rm -rf /opt/ghc || true
           sudo rm -rf /opt/hostedtoolcache/CodeQL || true
           sudo apt-get clean
           docker system prune -af --volumes || true
-
           echo "=== Depois da limpeza ==="
           df -h /
 
@@ -65,62 +63,54 @@ jobs:
           set -euxo pipefail
           docker pull --platform linux/amd64 "$SLACKWARE_IMAGE"
           docker image inspect "$SLACKWARE_IMAGE" >/dev/null
-          docker images "$SLACKWARE_IMAGE"
           test -s /etc/ssl/certs/ca-certificates.crt
+          docker images "$SLACKWARE_IMAGE"
           df -h /
 
-      - name: Validar TLS dentro do Slackware 15.0
+      - name: Validar bootstrap TLS no Slackware 15.0
         shell: bash
         run: |
           set -euxo pipefail
-
-          # A imagem mínima do Slackware 15.0 ainda não possui o bundle CA.
-          # Para o bootstrap do slackpkg, montamos somente leitura o bundle
-          # confiável do runner GitHub e apontamos o OpenSSL/wget para ele.
           docker run --rm \
             --platform linux/amd64 \
             --user 0:0 \
-            -e SSL_CERT_FILE=/bootstrap/ca-certificates.crt \
             -v /etc/ssl/certs/ca-certificates.crt:/bootstrap/ca-certificates.crt:ro \
             "$SLACKWARE_IMAGE" \
             /bin/bash -lc '
               set -e
-              test -s "$SSL_CERT_FILE"
-              wget -q --spider https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
-              echo "TLS bootstrap OK"
+              test -s /bootstrap/ca-certificates.crt
+              wget --ca-certificate=/bootstrap/ca-certificates.crt \
+                -q --spider \
+                https://mirrors.kernel.org/slackware/slackware64-15.0/CHECKSUMS.md5.asc
+              echo "Bootstrap TLS OK"
             '
 
       - name: Compilar kernel e criar pacote TXZ
         shell: bash
         run: |
           set -euxo pipefail
-
           rm -rf output .kernel-build
           mkdir -p output .kernel-build
 
-          # Todo o toolchain, build e makepkg rodam dentro do Slackware 15.0.
-          # O bundle CA do runner serve apenas para o bootstrap HTTPS da imagem
-          # mínima; ele é montado somente leitura e não entra no pacote final.
           docker run --rm \
             --platform linux/amd64 \
             --user 0:0 \
             -e JOBS="$JOBS" \
             -e WORKROOT=/work \
             -e BUILDROOT=/work/.kernel-build \
-            -e SSL_CERT_FILE=/bootstrap/ca-certificates.crt \
+            -e BOOTSTRAP_CA=/bootstrap/ca-certificates.crt \
             -v /etc/ssl/certs/ca-certificates.crt:/bootstrap/ca-certificates.crt:ro \
             -v "$GITHUB_WORKSPACE:/work" \
             -w /work \
             "$SLACKWARE_IMAGE" \
             /bin/bash /work/.github/scripts/build-kernel-slackware.sh
 
-      - name: Registrar diagnóstico da falha
+      - name: Registrar diagnóstico da falha de build
         if: failure()
         shell: bash
         run: |
           set +e
           mkdir -p .ci
-
           {
             echo "GitHub Actions - último diagnóstico de falha"
             echo "==========================================="
@@ -136,23 +126,19 @@ jobs:
             echo "Uso da árvore de build:"
             du -sh .kernel-build 2>/dev/null || true
             echo
-
             if [ -s output/build.log ]; then
-              echo "Últimas 2500 linhas de output/build.log:"
+              echo "Últimas 3000 linhas de output/build.log:"
               echo "-----------------------------------------"
-              tail -n 2500 output/build.log
+              tail -n 3000 output/build.log
             else
               echo "output/build.log não foi criado."
-              echo "A falha ocorreu antes de o script de build iniciar."
             fi
           } > .ci/last-failure.log
 
-          cat .ci/last-failure.log | tail -n 250
-
+          tail -n 300 .ci/last-failure.log
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .ci/last-failure.log
-
           if ! git diff --cached --quiet; then
             git commit -m "CI: registra última falha do build do kernel"
             git pull --rebase origin main || true
@@ -186,7 +172,7 @@ jobs:
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
           cat output/meta.env
 
-      - name: Verificar artefatos
+      - name: Verificar artefatos locais
         shell: bash
         run: |
           set -euxo pipefail
@@ -201,7 +187,7 @@ jobs:
           ls -lh output/
           df -h /
 
-      - name: Upload do pacote
+      - name: Upload do pacote para Actions
         uses: actions/upload-artifact@v4
         with:
           name: kernel-slackware-${{ steps.meta.outputs.kernel_version }}
@@ -212,20 +198,43 @@ jobs:
             output/build.log
           compression-level: 0
           if-no-files-found: error
+          retention-days: 14
 
   publish:
-    name: Publicar TXZ
+    name: Publicar e verificar TXZ
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
-      - name: Baixar pacote
+      - name: Checkout para registrar resultado
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Baixar pacote do job de build
         uses: actions/download-artifact@v4
         with:
           name: kernel-slackware-${{ needs.build.outputs.kernel_version }}
           path: release
 
+      - name: Verificar pacote antes da publicação
+        shell: bash
+        env:
+          PACKAGE: ${{ needs.build.outputs.package_name }}
+        run: |
+          set -euxo pipefail
+          test -s "release/$PACKAGE"
+          test -s "release/$PACKAGE.sha256"
+          (
+            cd release
+            sha256sum -c "$PACKAGE.sha256"
+          )
+          ls -lh release/
+
       - name: Publicar GitHub Release
+        id: release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -234,7 +243,7 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package_name }}
         run: |
           set -euxo pipefail
-          ls -lh release/
+          exec > >(tee -a release/publish.log) 2>&1
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload \
@@ -247,6 +256,127 @@ jobs:
               "$TAG" \
               "release/$PACKAGE" \
               "release/$PACKAGE.sha256" \
+              --target "$GITHUB_SHA" \
               --title "Linux $VERSION para Slackware/Salix" \
-              --notes "Pacote TXZ x86_64 compilado dentro de Slackware 15.0 e criado com o makepkg nativo do Slackware. Inclui kernel e módulos correspondentes. XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in. Instalação: sudo installpkg $PACKAGE"
+              --notes "Pacote Slackware TXZ x86_64 compilado e empacotado dentro de Slackware 15.0. Criado com makepkg e validado com installpkg --warn e explodepkg. Inclui kernel e módulos correspondentes. XFS, Btrfs, SATA/AHCI, device-mapper e dm-crypt são built-in. Instalação: sudo installpkg $PACKAGE"
           fi
+
+          RELEASE_URL="$(gh release view "$TAG" --json url --jq .url)"
+          test -n "$RELEASE_URL"
+          echo "release_url=$RELEASE_URL" >> "$GITHUB_OUTPUT"
+          echo "Release: $RELEASE_URL"
+
+      - name: Confirmar pacote publicado e checksum remoto
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.release_tag }}
+          PACKAGE: ${{ needs.build.outputs.package_name }}
+        run: |
+          set -euxo pipefail
+
+          gh release view "$TAG" \
+            --json tagName,isDraft,isPrerelease,assets,url \
+            > release/release.json
+
+          jq -e '.isDraft == false and .isPrerelease == false' release/release.json
+          jq -e --arg p "$PACKAGE" '.assets | map(.name) | index($p) != null' release/release.json
+          jq -e --arg p "$PACKAGE.sha256" '.assets | map(.name) | index($p) != null' release/release.json
+
+          rm -rf release-verify
+          mkdir -p release-verify
+          gh release download "$TAG" --pattern "$PACKAGE" --dir release-verify
+          cp "release/$PACKAGE.sha256" release-verify/
+          (
+            cd release-verify
+            sha256sum -c "$PACKAGE.sha256"
+          )
+
+          test -s "release-verify/$PACKAGE"
+          cmp -s "release/$PACKAGE" "release-verify/$PACKAGE"
+          echo "Pacote remoto confirmado byte a byte."
+
+      - name: Registrar entrega concluída no repositório
+        shell: bash
+        env:
+          TAG: ${{ needs.build.outputs.release_tag }}
+          VERSION: ${{ needs.build.outputs.kernel_version }}
+          PACKAGE: ${{ needs.build.outputs.package_name }}
+          RELEASE_URL: ${{ steps.release.outputs.release_url }}
+        run: |
+          set -euxo pipefail
+          mkdir -p .ci
+          SHA256="$(awk '{print $1}' "release/$PACKAGE.sha256")"
+
+          cat > .ci/LAST-SUCCESS.md <<EOF_SUCCESS
+          # Última entrega TXZ concluída
+
+          - Kernel: $VERSION
+          - Pacote: $PACKAGE
+          - SHA-256: $SHA256
+          - Tag: $TAG
+          - Release: $RELEASE_URL
+          - Workflow run: $GITHUB_RUN_ID
+          - Commit do workflow: $GITHUB_SHA
+          - Ambiente de build: Slackware 15.0
+          - Empacotamento: makepkg nativo do Slackware
+          - Validação: installpkg --warn, explodepkg, SHA-256 e download da Release comparado byte a byte
+
+          Instalação no Slackware/Salix:
+
+          \`\`\`bash
+          sudo installpkg $PACKAGE
+          \`\`\`
+          EOF_SUCCESS
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci/LAST-SUCCESS.md
+          if ! git diff --cached --quiet; then
+            git commit -m "CI: registra entrega TXZ concluída"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
+
+      - name: Registrar falha de publicação
+        if: failure()
+        shell: bash
+        run: |
+          set +e
+          mkdir -p .ci
+          {
+            echo "GitHub Actions - falha na entrega/publicação"
+            echo "=========================================="
+            echo "run_id=$GITHUB_RUN_ID"
+            echo "commit=$GITHUB_SHA"
+            echo "package=${{ needs.build.outputs.package_name }}"
+            echo "tag=${{ needs.build.outputs.release_tag }}"
+            echo
+            if [ -s release/publish.log ]; then
+              cat release/publish.log
+            fi
+            echo
+            ls -lh release 2>/dev/null || true
+          } > .ci/last-publish-failure.log
+
+          tail -n 300 .ci/last-publish-failure.log
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci/last-publish-failure.log
+          if ! git diff --cached --quiet; then
+            git commit -m "CI: registra falha na publicação do TXZ"
+            git pull --rebase origin main || true
+            git push origin HEAD:main || true
+          fi
+
+      - name: Upload do log de publicação em caso de falha
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-publish-failure-log
+          path: |
+            release/publish.log
+            release/release.json
+            .ci/last-publish-failure.log
+          if-no-files-found: ignore
+          retention-days: 7
