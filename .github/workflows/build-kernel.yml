@@ -49,6 +49,33 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Registrar execução atual
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p .ci
+          cat > .ci/CURRENT-RUN.md <<EOF_RUN
+          # Execução atual do build
+
+          - Run ID: $GITHUB_RUN_ID
+          - Commit: $GITHUB_SHA
+          - Tentativa: $GITHUB_RUN_ATTEMPT
+          - Imagem: $SLACKWARE_IMAGE
+          - Jobs: $JOBS
+          - Estado inicial: iniciado
+          EOF_RUN
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .ci/CURRENT-RUN.md
+          if ! git diff --cached --quiet; then
+            git commit -m "CI: registra execução atual do kernel"
+            git pull --rebase origin main
+            git push origin HEAD:main
+          fi
 
       - name: Validar script de build
         shell: bash
@@ -274,7 +301,6 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package_name }}
         run: |
           set -euxo pipefail
-
           gh release view "$TAG" \
             --json tagName,isDraft,isPrerelease,assets,url \
             > release/release.json
@@ -291,7 +317,6 @@ jobs:
             cd release-verify
             sha256sum -c "$PACKAGE.sha256"
           )
-
           test -s "release-verify/$PACKAGE"
           cmp -s "release/$PACKAGE" "release-verify/$PACKAGE"
           echo "Pacote remoto confirmado byte a byte."
@@ -307,7 +332,6 @@ jobs:
           set -euxo pipefail
           mkdir -p .ci
           SHA256="$(awk '{print $1}' "release/$PACKAGE.sha256")"
-
           cat > .ci/LAST-SUCCESS.md <<EOF_SUCCESS
           # Última entrega TXZ concluída
 
