@@ -10,7 +10,9 @@ SRCROOT="$BUILDROOT/src"
 PKGROOT="$BUILDROOT/pkgroot"
 VERIFY="$BUILDROOT/verify"
 TMPDIR="$BUILDROOT/tmp"
+BOOTSTRAP_CA="${BOOTSTRAP_CA:-}"
 CONFIG_SHA256="d5ef048c336d06d66673cbe425519a84f67748383db91c132c41e702a04dfc77"
+MIRROR="https://mirrors.kernel.org/slackware/slackware64-15.0/"
 
 mkdir -p "$OUTPUT"
 : > "$OUTPUT/build.log"
@@ -28,12 +30,23 @@ slackpkg_run() {
   rc=$?
   set -e
 
-  # O slackpkg usa 20 para alguns estados não fatais (por exemplo, nada a fazer).
+  # slackpkg pode retornar 20 quando não há ação necessária.
   if [ "$rc" -ne 0 ] && [ "$rc" -ne 20 ]; then
     echo "ERRO: slackpkg terminou com status $rc: $*"
     return "$rc"
   fi
   return 0
+}
+
+configure_wget_ca() {
+  local ca="$1"
+  test -s "$ca"
+  cat > /root/.wgetrc <<EOF_WGETRC
+check_certificate = on
+ca_certificate = $ca
+EOF_WGETRC
+  chmod 0600 /root/.wgetrc
+  export WGETRC=/root/.wgetrc
 }
 
 log "Ambiente Slackware 15.0"
@@ -44,13 +57,18 @@ echo "Arquitetura: $(uname -m)"
 echo "Jobs: $JOBS"
 df -h / /work || true
 
+log "Bootstrap TLS seguro"
+# A imagem mínima ainda não tem a cadeia CA utilizável. O runner monta um
+# bundle confiável somente leitura. GNU wget recebe o bundle explicitamente
+# via WGETRC; não dependemos de SSL_CERT_FILE.
+test -n "$BOOTSTRAP_CA"
+configure_wget_ca "$BOOTSTRAP_CA"
+wget -q --spider "${MIRROR}CHECKSUMS.md5.asc"
+echo "Bootstrap TLS OK usando $BOOTSTRAP_CA"
+
 log "Preparando slackpkg para ambiente não interativo"
+printf '%s\n' "$MIRROR" > /etc/slackpkg/mirrors
 
-# Usa explicitamente um mirror da árvore estável 15.0.
-printf '%s\n' 'https://mirrors.kernel.org/slackware/slackware64-15.0/' > /etc/slackpkg/mirrors
-
-# A correção abaixo é a mesma ideia usada pelo projeto da imagem
-# aclemons/slackware para evitar falha de stty em builds não interativos.
 if [ -f /usr/libexec/slackpkg/functions.d/post-functions.sh ]; then
   sed -i 's,SIZE=\$( stty size )$,SIZE=$( [[ $- != *i* ]] \&\& stty size || echo "0 0"),' \
     /usr/libexec/slackpkg/functions.d/post-functions.sh || true
@@ -61,28 +79,40 @@ SLACKPKG=(slackpkg -default_answer=yes -batch=on)
 
 slackpkg_run "${SLACKPKG[@]}" update
 
-# Não precisamos de uma instalação desktop completa. Para compilar kernel no
-# Slackware, instalamos as séries de base, aplicações de console,
-# desenvolvimento, bibliotecas e rede. Isso mantém as dependências do
-# toolchain consistentes sem baixar KDE/X/XAP/desktop.
 if grep -q '^DOWNLOAD_ALL=on' /etc/slackpkg/slackpkg.conf; then
   sed -i 's/^DOWNLOAD_ALL=on/DOWNLOAD_ALL=off/' /etc/slackpkg/slackpkg.conf
 fi
 
+# Instala as branches Slackware necessárias. slackpkg aceita o nome da branch
+# diretamente (a, ap, d, l, n); não usamos o padrão frágil "a/*".
 for series in a ap d l n; do
   log "Instalando série Slackware: $series"
-  slackpkg_run "${SLACKPKG[@]}" install "$series"/*
+  slackpkg_run "${SLACKPKG[@]}" install "$series"
   rm -rf /var/cache/packages/* || true
 done
 
-update-ca-certificates || true
+log "Ativando cadeia CA nativa do Slackware"
+command -v update-ca-certificates
+update-ca-certificates --fresh
 ldconfig
 rm -rf /var/cache/packages/* || true
+
+NATIVE_CA=""
+for candidate in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem; do
+  if [ -s "$candidate" ]; then
+    NATIVE_CA="$candidate"
+    break
+  fi
+done
+test -n "$NATIVE_CA"
+configure_wget_ca "$NATIVE_CA"
+wget -q --spider "${MIRROR}CHECKSUMS.md5.asc"
+echo "TLS nativo Slackware OK usando $NATIVE_CA"
 
 log "Validando toolchain Slackware 15.0"
 for cmd in \
   gcc ld make bc bison flex perl openssl \
-  makepkg explodepkg depmod xz wget sha256sum \
+  makepkg explodepkg installpkg depmod xz wget sha256sum \
   awk sed grep sort tar strip file; do
   command -v "$cmd"
 done
@@ -120,7 +150,7 @@ TARBALL="linux-${KERNEL_VERSION}.tar.xz"
 PACKAGE_NAME="kernel-generic-lts618-${KERNEL_VERSION}-x86_64-1.txz"
 RELEASE_TAG="kernel-${KERNEL_VERSION}"
 CONFIG_NAME="slackware64-15.0-huge.s.config"
-CONFIG_URL="https://mirrors.kernel.org/slackware/slackware64-15.0/kernels/huge.s/config"
+CONFIG_URL="${MIRROR}kernels/huge.s/config"
 
 echo "Kernel: $KERNEL_VERSION"
 echo "Pacote: $PACKAGE_NAME"
@@ -152,11 +182,11 @@ CFG=./scripts/config
 "$CFG" --disable LOCALVERSION_AUTO
 "$CFG" --disable WERROR || true
 
-# Módulos permanecem suportados; a política de MODVERSIONS vem do config-base.
+# Módulos permanecem suportados; MODVERSIONS segue o config-base.
 "$CFG" --enable MODULES
 "$CFG" --enable MODULE_UNLOAD
 
-# Evita dependências opcionais que não agregam valor ao pacote final.
+# Remove dependências opcionais que não são necessárias ao pacote final.
 "$CFG" --disable MODULE_SIG || true
 "$CFG" --disable MODULE_SIG_ALL || true
 "$CFG" --set-str SYSTEM_TRUSTED_KEYS ""
@@ -169,7 +199,7 @@ CFG=./scripts/config
 "$CFG" --disable LTO || true
 "$CFG" --enable LTO_NONE || true
 
-# Módulos sem compressão: compatibilidade direta com kmod do Slackware/Salix 15.0.
+# Módulos sem compressão para compatibilidade direta com kmod do Slackware 15.0.
 "$CFG" --enable MODULE_COMPRESS_NONE || true
 "$CFG" --disable MODULE_COMPRESS_GZIP || true
 "$CFG" --disable MODULE_COMPRESS_XZ || true
@@ -186,7 +216,6 @@ for sym in \
   "$CFG" --enable "$sym"
 done
 
-# Suporte adicional comum.
 for sym in \
   NVME_CORE BLK_DEV_NVME FAT_FS VFAT_FS \
   USB_SUPPORT USB USB_XHCI_HCD USB_XHCI_PCI USB_STORAGE \
@@ -290,7 +319,10 @@ cd "$PKGROOT"
 makepkg -l y -c n "$OUTPUT/$PACKAGE_NAME"
 test -s "$OUTPUT/$PACKAGE_NAME"
 
-log "Validando TXZ com explodepkg"
+log "Validando TXZ com pkgtools Slackware"
+# installpkg --warn lê e valida a estrutura do pacote sem instalá-lo.
+installpkg --warn "$OUTPUT/$PACKAGE_NAME" >/dev/null
+
 rm -rf "$VERIFY"
 mkdir -p "$VERIFY"
 cd "$VERIFY"
