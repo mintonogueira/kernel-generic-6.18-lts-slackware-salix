@@ -1,0 +1,162 @@
+name: Sincronizar três TXZ validados
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/sync-three-txz.yml"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-three-txz
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Copiar três TXZ validados para packages/
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout da branch main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Ler metadados da entrega validada
+        id: meta
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -s .ci/LAST-SUCCESS.md
+
+          VERSION="$(sed -n 's/^- Kernel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          PACKAGE="$(sed -n 's/^- Pacote kernel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          PACKAGE_SHA256="$(sed -n 's/^- SHA-256 kernel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          DEVEL_PACKAGE="$(sed -n 's/^- Pacote devel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          DEVEL_SHA256="$(sed -n 's/^- SHA-256 devel: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          HEADERS_PACKAGE="$(sed -n 's/^- Pacote headers: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          HEADERS_SHA256="$(sed -n 's/^- SHA-256 headers: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+          TAG="$(sed -n 's/^- Tag: //p' .ci/LAST-SUCCESS.md | sed -n '1p')"
+
+          for v in VERSION PACKAGE PACKAGE_SHA256 DEVEL_PACKAGE DEVEL_SHA256 HEADERS_PACKAGE HEADERS_SHA256 TAG; do
+            test -n "${!v}"
+          done
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "package=$PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "package_sha256=$PACKAGE_SHA256" >> "$GITHUB_OUTPUT"
+          echo "devel_package=$DEVEL_PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "devel_sha256=$DEVEL_SHA256" >> "$GITHUB_OUTPUT"
+          echo "headers_package=$HEADERS_PACKAGE" >> "$GITHUB_OUTPUT"
+          echo "headers_sha256=$HEADERS_SHA256" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Baixar e validar três pacotes da Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PACKAGE: ${{ steps.meta.outputs.package }}
+          PACKAGE_SHA256: ${{ steps.meta.outputs.package_sha256 }}
+          DEVEL_PACKAGE: ${{ steps.meta.outputs.devel_package }}
+          DEVEL_SHA256: ${{ steps.meta.outputs.devel_sha256 }}
+          HEADERS_PACKAGE: ${{ steps.meta.outputs.headers_package }}
+          HEADERS_SHA256: ${{ steps.meta.outputs.headers_sha256 }}
+        run: |
+          set -euxo pipefail
+          rm -rf repo-package-download
+          mkdir -p repo-package-download
+
+          for asset in \
+            "$PACKAGE" "$PACKAGE.sha256" \
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
+            gh release download "$TAG" --pattern "$asset" --dir repo-package-download
+            test -s "repo-package-download/$asset"
+          done
+
+          test "$(sha256sum "repo-package-download/$PACKAGE" | awk '{print $1}')" = "$PACKAGE_SHA256"
+          test "$(sha256sum "repo-package-download/$DEVEL_PACKAGE" | awk '{print $1}')" = "$DEVEL_SHA256"
+          test "$(sha256sum "repo-package-download/$HEADERS_PACKAGE" | awk '{print $1}')" = "$HEADERS_SHA256"
+
+          (
+            cd repo-package-download
+            sha256sum -c "$PACKAGE.sha256"
+            sha256sum -c "$DEVEL_PACKAGE.sha256"
+            sha256sum -c "$HEADERS_PACKAGE.sha256"
+          )
+
+      - name: Commitar e confirmar os três TXZ em packages/
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.meta.outputs.version }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          PACKAGE: ${{ steps.meta.outputs.package }}
+          PACKAGE_SHA256: ${{ steps.meta.outputs.package_sha256 }}
+          DEVEL_PACKAGE: ${{ steps.meta.outputs.devel_package }}
+          DEVEL_SHA256: ${{ steps.meta.outputs.devel_sha256 }}
+          HEADERS_PACKAGE: ${{ steps.meta.outputs.headers_package }}
+          HEADERS_SHA256: ${{ steps.meta.outputs.headers_sha256 }}
+        run: |
+          set -euxo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git pull --ff-only origin main
+
+          mkdir -p packages .ci
+          for asset in \
+            "$PACKAGE" "$PACKAGE.sha256" \
+            "$DEVEL_PACKAGE" "$DEVEL_PACKAGE.sha256" \
+            "$HEADERS_PACKAGE" "$HEADERS_PACKAGE.sha256"; do
+            cp -f "repo-package-download/$asset" "packages/$asset"
+          done
+
+          test "$(sha256sum "packages/$PACKAGE" | awk '{print $1}')" = "$PACKAGE_SHA256"
+          test "$(sha256sum "packages/$DEVEL_PACKAGE" | awk '{print $1}')" = "$DEVEL_SHA256"
+          test "$(sha256sum "packages/$HEADERS_PACKAGE" | awk '{print $1}')" = "$HEADERS_SHA256"
+
+          for asset in "$PACKAGE" "$DEVEL_PACKAGE" "$HEADERS_PACKAGE"; do
+            test "$(stat -c '%s' "packages/$asset")" -lt 100000000
+          done
+
+          cat > .ci/PACKAGE-IN-REPO.md <<EOF_PACKAGE
+          # Pacotes TXZ armazenados no repositório
+
+          - Kernel: $VERSION
+          - Pacote kernel: packages/$PACKAGE
+          - SHA-256 kernel: $PACKAGE_SHA256
+          - Pacote devel: packages/$DEVEL_PACKAGE
+          - SHA-256 devel: $DEVEL_SHA256
+          - Pacote headers: packages/$HEADERS_PACKAGE
+          - SHA-256 headers: $HEADERS_SHA256
+          - Release de origem: $TAG
+          - Workflow run: $GITHUB_RUN_ID
+          - Estado: três pacotes validados e commitados na branch main
+          EOF_PACKAGE
+
+          git add \
+            "packages/$PACKAGE" "packages/$PACKAGE.sha256" \
+            "packages/$DEVEL_PACKAGE" "packages/$DEVEL_PACKAGE.sha256" \
+            "packages/$HEADERS_PACKAGE" "packages/$HEADERS_PACKAGE.sha256" \
+            .ci/PACKAGE-IN-REPO.md
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Adiciona TXZ kernel, devel e headers ao repositório"
+            git push origin HEAD:main
+          fi
+
+          for asset in "$PACKAGE" "$DEVEL_PACKAGE" "$HEADERS_PACKAGE"; do
+            SIZE_LOCAL="$(stat -c '%s' "packages/$asset")"
+            SIZE_REMOTE="$(gh api "repos/$GITHUB_REPOSITORY/contents/packages/$asset?ref=main" --jq '.size')"
+            test "$SIZE_LOCAL" = "$SIZE_REMOTE"
+          done
+
+          echo "Três pacotes confirmados na branch main."
