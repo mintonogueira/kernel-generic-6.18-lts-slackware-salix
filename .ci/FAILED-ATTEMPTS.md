@@ -158,6 +158,14 @@ Na versão executada do bootstrap, o próximo comando após configurar a CA era 
 
 Aprendizado: não colocar uma sondagem `wget -q --spider` de passagem única como gate fatal antes do mecanismo resiliente. A sondagem deve ter retry limitado, preservar verificação TLS, exibir o erro da última tentativa e só então falhar. Não usar `-q` em uma checagem cujo diagnóstico será necessário se ela abortar o build.
 
+## Falha concreta registrada em 2026-08-21 — run 32436210474
+
+A execução baseada no commit `55a31c117e05094c1a4711f5d668a0bb0de59bde` voltou a concluir a compilação e a criação do `kernel-devel`, e o wrapper de validação já tratou corretamente o retorno conhecido do `explodepkg` quando há `install/doinst.sh`. Mesmo assim a validação terminou com status 1 logo depois da extração do pacote.
+
+Causa confirmada pelo conteúdo extraído e pela lógica atual do `makepkg -l y`: os links simbólicos `lib/modules/$RELEASE/build` e `source` são convertidos pelo `makepkg` em comandos dentro de `install/doinst.sh`. Como `explodepkg` deliberadamente não executa esse script, testar imediatamente esses caminhos com `test -L` dentro da árvore extraída produz falso negativo. O log registrou o aviso de que `doinst.sh` não foi executado e depois `ERRO na linha 540 (status 1)`, com aproximadamente 92 GB livres.
+
+Aprendizado: para validar offline um pacote criado com `makepkg -l y`, não exigir que symlinks convertidos em `doinst.sh` já existam após `explodepkg`. No `kernel-devel`, executar o `install/doinst.sh` exclusivamente dentro da raiz temporária de validação, nunca no host, e só então verificar `build`/`source` com `test -L`. Isso simula a instalação do pacote sem alterar o sistema do runner e mantém a validação estrutural dos links.
+
 ## Direção atual aceita
 
 - Runner GitHub Ubuntu apenas como host/orquestrador.
@@ -168,6 +176,7 @@ Aprendizado: não colocar uma sondagem `wget -q --spider` de passagem única com
 - Kernel compilado dentro do Slackware.
 - `.txz` criado com `makepkg` nativo do Slackware.
 - Pacote validado com `explodepkg` dentro do Slackware, tratando explicitamente o caso conhecido de retorno 1 após detectar `install/doinst.sh` e exigindo validação estrutural subsequente.
+- Para `kernel-devel` criado com `makepkg -l y`, executar o `install/doinst.sh` apenas dentro da raiz temporária extraída antes de validar os symlinks `build`/`source`.
 - Não substituir nem remover automaticamente o kernel antigo.
 - Não alterar automaticamente o bootloader durante a instalação inicial do pacote.
 
