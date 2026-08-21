@@ -126,6 +126,23 @@ O `df` registrado no mesmo log mostrava aproximadamente 92 GB livres. Portanto, 
 
 Aprendizado: encapsular a extração de validação. Um retorno 1 só pode ser tolerado quando a extração produziu a árvore esperada e `install/doinst.sh` está presente; em seguida os testes estruturais continuam obrigatórios. Outros retornos, ou ausência da árvore esperada, devem falhar.
 
+## Falha concreta registrada em 2026-08-20 — run 32412269511
+
+A execução baseada no commit `59eeda66d1e776b07a35ca3a2945e4c4ad21357a` voltou a alcançar a validação do `kernel-devel`, porém a cópia efetivamente executada de `.github/scripts/build-kernel-slackware.sh` ainda continha uma chamada direta a `explodepkg` sob `set -e`.
+
+Causa confirmada em `.ci/last-failure.log`:
+
+```text
+An installation script was detected in ./install/doinst.sh, but
+was not executed.
+
+ERRO na linha 538 (status 1)
+```
+
+O log mostrava aproximadamente 92 GB livres no momento da falha. Portanto não foi falta de espaço, compilação do kernel nem criação do TXZ: foi a mesma classe de retorno conhecida do `explodepkg`, mas ainda existente em outra revisão/trecho ativo do script.
+
+Aprendizado adicional: não basta documentar ou corrigir uma ocorrência anterior. Antes de disparar nova execução, deve-se revisar todas as chamadas ativas a `explodepkg` na versão da branch `main` e garantir que cada validação capture o retorno explicitamente, aceite status 1 somente quando a árvore esperada foi extraída e `install/doinst.sh` existe, e mantenha os testes estruturais obrigatórios. Uma chamada direta a `explodepkg` sob `set -e` não deve permanecer.
+
 ## Direção atual aceita
 
 - Runner GitHub Ubuntu apenas como host/orquestrador.
