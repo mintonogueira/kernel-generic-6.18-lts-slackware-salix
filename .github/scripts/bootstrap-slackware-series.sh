@@ -24,6 +24,33 @@ EOF_WGETRC
   export WGETRC=/root/.wgetrc
 }
 
+wget_probe_retry() {
+  local url="$1" attempt=1 rc=0
+
+  while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
+    echo "wget probe tentativa $attempt/$MAX_ATTEMPTS: $url"
+
+    set +e
+    wget --spider --tries=1 --timeout=30 "$url"
+    rc=$?
+    set -e
+
+    if [ "$rc" -eq 0 ]; then
+      return 0
+    fi
+
+    if [ "$attempt" -ge "$MAX_ATTEMPTS" ]; then
+      echo "ERRO: wget probe falhou após $MAX_ATTEMPTS tentativas (status $rc): $url"
+      return "$rc"
+    fi
+
+    sleep $((attempt * 5))
+    attempt=$((attempt + 1))
+  done
+
+  return "$rc"
+}
+
 slackpkg_retry() {
   local attempt=1 rc=0 command="${1:-}"
 
@@ -65,7 +92,7 @@ grep -q '^Slackware 15\.0' /etc/slackware-version
 test "$(uname -m)" = "x86_64"
 test -n "$BOOTSTRAP_CA"
 configure_wget_ca "$BOOTSTRAP_CA"
-wget -q --spider "${MIRROR}CHECKSUMS.md5.asc"
+wget_probe_retry "${MIRROR}CHECKSUMS.md5.asc"
 
 printf '%s\n' "$MIRROR" > /etc/slackpkg/mirrors
 
