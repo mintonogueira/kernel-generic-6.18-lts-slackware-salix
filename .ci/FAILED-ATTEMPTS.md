@@ -143,6 +143,21 @@ O log mostrava aproximadamente 92 GB livres no momento da falha. Portanto não f
 
 Aprendizado adicional: não basta documentar ou corrigir uma ocorrência anterior. Antes de disparar nova execução, deve-se revisar todas as chamadas ativas a `explodepkg` na versão da branch `main` e garantir que cada validação capture o retorno explicitamente, aceite status 1 somente quando a árvore esperada foi extraída e `install/doinst.sh` existe, e mantenha os testes estruturais obrigatórios. Uma chamada direta a `explodepkg` sob `set -e` não deve permanecer.
 
+## Falha concreta registrada em 2026-08-20 — run 32435699991
+
+A execução baseada no commit `1a9a2a0ed0f9d79987df8955ca2b954b32292b5a` passou pela checagem TLS do workflow contra `CHECKSUMS.md5.asc`, mas falhou segundos depois na etapa 0 do container, antes de `slackpkg update` e antes de criar `output/build.log`.
+
+Causa confirmada pelo log do job:
+
+```text
+==== Bootstrap resiliente das séries Slackware 15.0 ====
+Process completed with exit code 4.
+```
+
+Na versão executada do bootstrap, o próximo comando após configurar a CA era um `wget -q --spider` único para a mesma URL. No GNU Wget, status 4 representa falha de rede. Como a checagem anterior do mesmo endpoint havia passado e havia aproximadamente 106 GB livres, esta execução não indica problema de disco, compilação, TLS permanentemente inválido ou `slackpkg`; ela abortou numa sondagem de rede sem retry e com saída silenciada.
+
+Aprendizado: não colocar uma sondagem `wget -q --spider` de passagem única como gate fatal antes do mecanismo resiliente. A sondagem deve ter retry limitado, preservar verificação TLS, exibir o erro da última tentativa e só então falhar. Não usar `-q` em uma checagem cujo diagnóstico será necessário se ela abortar o build.
+
 ## Direção atual aceita
 
 - Runner GitHub Ubuntu apenas como host/orquestrador.
