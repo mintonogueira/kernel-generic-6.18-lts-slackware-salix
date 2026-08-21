@@ -43,6 +43,11 @@ Antes de alterar `.github/workflows/build-kernel.yml` ou `.github/scripts/build-
    - O log terminou com `An installation script was detected in ./install/doinst.sh, but was not executed.` e `ERRO na linha 520 (status 1)`; havia aproximadamente 92 GB livres.
    - Aprendizado: a validação deve capturar explicitamente o retorno do `explodepkg`, aceitar somente o caso conhecido em que a árvore foi efetivamente extraída e contém `install/doinst.sh`, e depois validar os arquivos esperados. Qualquer outro retorno não zero continua sendo erro.
 
+9. **Depender de um segundo workflow disparado por `push` feito pelo próprio GitHub Actions com o `GITHUB_TOKEN`.**
+   - A execução `32445287784` compilou, validou e publicou com sucesso os três TXZ, e o job de publicação criou o commit `9df2d784403e9b56fa41a55d972064012f9d3074` com a mensagem `[repo-package-only] CI: registra entrega dos três TXZ`.
+   - O desenho do workflow esperava que esse commit disparasse outra execução para o job `sync_release_package`, mas nenhuma nova execução foi criada e `packages/` permaneceu apenas com o pacote antigo `kernel-generic-lts618-6.18.45-x86_64-1.txz`.
+   - Aprendizado: a sincronização final para `packages/` não pode depender de uma segunda execução encadeada por um commit produzido pelo próprio workflow. A cópia dos três artefatos já validados deve ocorrer em um fluxo explicitamente acionável e independente, ou dentro da mesma execução que publica a Release.
+
 ## Falha concreta registrada em 2026-08-19
 
 Execução baseada no commit `4b67f52c2edeb0292a33a54e4c119c118d835ede` falhou antes da compilação do kernel.
@@ -166,6 +171,14 @@ Causa confirmada pelo conteúdo extraído e pela lógica atual do `makepkg -l y`
 
 Aprendizado: para validar offline um pacote criado com `makepkg -l y`, não exigir que symlinks convertidos em `doinst.sh` já existam após `explodepkg`. No `kernel-devel`, executar o `install/doinst.sh` exclusivamente dentro da raiz temporária de validação, nunca no host, e só então verificar `build`/`source` com `test -L`. Isso simula a instalação do pacote sem alterar o sistema do runner e mantém a validação estrutural dos links.
 
+## Falha concreta registrada em 2026-08-21 — sincronização pós-run 32445287784
+
+A execução `32445287784`, baseada no commit `b343f10e7336a3cf523cc4146931c18ed50970c7`, concluiu com `success`: compilou e empacotou no Slackware 15.0, validou os três pacotes, publicou a Release e confirmou os checksums remotos. O job `Copiar três TXZ validados para o repositório` apareceu como `skipped` nessa execução, pois sua condição exigia um `push` cujo commit contivesse `[repo-package-only]`.
+
+O próprio job de publicação criou em seguida o commit `9df2d784403e9b56fa41a55d972064012f9d3074` com a mensagem `[repo-package-only] CI: registra entrega dos três TXZ`, mas o encadeamento esperado não produziu uma segunda execução. Como consequência, a Release passou a conter os três TXZ validados, enquanto `packages/` na branch `main` permaneceu apenas com `kernel-generic-lts618-6.18.45-x86_64-1.txz` e seu checksum.
+
+Aprendizado: não usar um commit criado pelo próprio workflow como gatilho necessário para uma segunda execução que conclui a entrega. A etapa que sincroniza a Release para `packages/` precisa ser executável de forma independente do build ou integrada ao mesmo fluxo de publicação, verificando novamente os três SHA-256 antes de qualquer commit.
+
 ## Direção atual aceita
 
 - Runner GitHub Ubuntu apenas como host/orquestrador.
@@ -179,6 +192,7 @@ Aprendizado: para validar offline um pacote criado com `makepkg -l y`, não exig
 - Para `kernel-devel` criado com `makepkg -l y`, executar o `install/doinst.sh` apenas dentro da raiz temporária extraída antes de validar os symlinks `build`/`source`.
 - Não substituir nem remover automaticamente o kernel antigo.
 - Não alterar automaticamente o bootloader durante a instalação inicial do pacote.
+- A sincronização final dos três TXZ para `packages/` deve validar novamente os checksums e não depender de um segundo `push` gerado pelo próprio workflow.
 
 ## Política para futuras falhas
 
