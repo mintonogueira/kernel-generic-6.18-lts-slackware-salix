@@ -18,7 +18,10 @@ mkdir -p "$BUILDROOT"
 # pacote que contém install/doinst.sh, avisando que o script de instalação não
 # foi executado. Para validação offline isso é esperado: o conteúdo extraído
 # continua sendo verificado logo depois. Qualquer outro retorno não zero, ou o
-# retorno 1 sem doinst.sh extraído, continua sendo erro fatal.
+# retorno 1 sem doinst.sh dentro do próprio TXZ, continua sendo erro fatal.
+# A presença do doinst.sh é confirmada pela listagem do pacote, pois explodepkg
+# pode detectar o script e ainda assim não deixá-lo disponível para um teste -f
+# após retornar 1.
 cat > "$RUNTIME_KERNEL_SCRIPT" <<'EOF_RUNTIME_HEADER'
 #!/bin/bash
 
@@ -31,9 +34,11 @@ explodepkg_validate() {
     rc=$?
   fi
 
-  if [ "$rc" -eq 1 ] && [ -f install/doinst.sh ]; then
-    echo "explodepkg retornou 1 após extrair install/doinst.sh; validação estrutural continuará."
-    return 0
+  if [ "$rc" -eq 1 ]; then
+    if tar -tf "$pkg" | grep -E '^(\./)?install/doinst\.sh$' >/dev/null; then
+      echo "explodepkg retornou 1 para pacote com install/doinst.sh; validação estrutural continuará."
+      return 0
+    fi
   fi
 
   echo "ERRO: explodepkg falhou com status $rc ao validar $pkg"
