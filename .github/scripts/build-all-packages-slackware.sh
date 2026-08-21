@@ -4,6 +4,8 @@ set -Eeuo pipefail
 WORKROOT="${WORKROOT:-/work}"
 BUILDROOT="${BUILDROOT:-$WORKROOT/.kernel-build}"
 
+# O bootstrap faz parte do fluxo integrado e inclui retry para a sondagem de
+# rede inicial, sem desativar validação TLS ou checksums do Slackware.
 printf '\n==== Etapa 0/3: bootstrap resiliente das séries Slackware ====\n'
 /bin/bash "$WORKROOT/.github/scripts/bootstrap-slackware-series.sh"
 
