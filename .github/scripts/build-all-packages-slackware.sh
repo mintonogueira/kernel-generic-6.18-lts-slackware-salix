@@ -57,6 +57,8 @@ awk '
       print "explodepkg_validate \"$OUTPUT/$PACKAGE_NAME\""
     } else if ($0 ~ /^explodepkg "\$OUTPUT\/\$DEVEL_PACKAGE_NAME"$/) {
       print "explodepkg_validate \"$OUTPUT/$DEVEL_PACKAGE_NAME\""
+      print "test -f install/doinst.sh"
+      print "/bin/sh install/doinst.sh"
     } else {
       print
     }
@@ -67,6 +69,7 @@ chmod +x "$RUNTIME_KERNEL_SCRIPT"
 grep -q '^log "Ativando cadeia CA nativa do Slackware"' "$RUNTIME_KERNEL_SCRIPT"
 grep -q '^explodepkg_validate "$OUTPUT/$PACKAGE_NAME"$' "$RUNTIME_KERNEL_SCRIPT"
 grep -q '^explodepkg_validate "$OUTPUT/$DEVEL_PACKAGE_NAME"$' "$RUNTIME_KERNEL_SCRIPT"
+grep -q '^/bin/sh install/doinst.sh$' "$RUNTIME_KERNEL_SCRIPT"
 if grep -q '^  log "Instalando série Slackware:' "$RUNTIME_KERNEL_SCRIPT"; then
   echo "ERRO: bootstrap duplicado permaneceu na cópia de execução"
   exit 1
